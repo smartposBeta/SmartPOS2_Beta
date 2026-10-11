@@ -7,12 +7,12 @@
 # For API and Real-time Socket.IO
 [[redirects]]
   from = "/api/*"
-  to = "https://smartpos2-bsiscaps.onrender.com/api/:splat"
+  to = "https://smartpos2-beta.onrender.com/api/:splat"
   status = 200
 
 [[redirects]]
   from = "/socket.io/*"
-  to = "https://smartpos2-bsiscaps.onrender.com/socket.io/:splat"
+  to = "https://smartpos2-beta.onrender.com/socket.io/:splat"
   status = 200
 
 # For Single Page Application

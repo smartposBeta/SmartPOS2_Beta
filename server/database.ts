@@ -1416,11 +1416,12 @@ export const dbService = {
             // Process each product individually
             for (const p of products) {
               try {
+                const effTenantId = tenantId || p.tenant_id || p.tenantId || '';
                 // Validate required fields first
-                if (!p.id || !tenantId || !p.name || p.price == null) {
+                if (!p.id || !effTenantId || !p.name || p.price == null) {
                   console.error('[SYNC FAILURE] Invalid product (missing required fields)', {
                     productId: p.id,
-                    tenantId,
+                    tenantId: effTenantId,
                     originalProduct: p
                   });
                   continue;
@@ -1435,7 +1436,7 @@ export const dbService = {
                 };
                 const productData = {
                   id: p.id,
-                  tenant_id: tenantId,
+                  tenant_id: effTenantId,
                   name: p.name,
                   price: p.price,
                   cost: p.cost,
