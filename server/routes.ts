@@ -3562,14 +3562,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           address: m.address || null,
           birthdate: m.birthdate ? (m.birthdate instanceof Date ? m.birthdate.toISOString() : String(m.birthdate)) : null,
           gender: m.gender || null,
-          date_hired: m.dateHired || m.date_hired ? (m.dateHired || m.date_hired instanceof Date ? (m.dateHired || m.date_hired).toISOString() : String(m.dateHired || m.date_hired)) : null,
+          date_hired: (() => { const val = m.dateHired || m.date_hired; return val ? (val instanceof Date ? val.toISOString() : String(val)) : null; })(),
           assigned_shift: m.assignedShift || m.assigned_shift || null,
-          last_login: m.lastLogin || m.last_login ? (m.lastLogin || m.last_login instanceof Date ? (m.lastLogin || m.last_login).toISOString() : String(m.lastLogin || m.last_login)) : null,
-          password_last_changed: m.passwordLastChanged || m.password_last_changed ? (m.passwordLastChanged || m.password_last_changed instanceof Date ? (m.passwordLastChanged || m.password_last_changed).toISOString() : String(m.passwordLastChanged || m.password_last_changed)) : null,
-          permissions: m.permissions ? (typeof m.permissions === 'string' ? JSON.parse(m.permissions) : m.permissions) : null,
+          last_login: (() => { const val = m.lastLogin || m.last_login; return val ? (val instanceof Date ? val.toISOString() : String(val)) : null; })(),
+          password_last_changed: (() => { const val = m.passwordLastChanged || m.password_last_changed; return val ? (val instanceof Date ? val.toISOString() : String(val)) : null; })(),
+          permissions: m.permissions ? (typeof m.permissions === 'string' ? (() => { try { return JSON.parse(m.permissions); } catch { return [m.permissions]; } })() : m.permissions) : null,
           created_by: m.createdBy || m.created_by || null,
           created_at: createdAt,
-          updated_at: m.updatedAt || m.updated_at ? (m.updatedAt || m.updated_at instanceof Date ? (m.updatedAt || m.updated_at).toISOString() : String(m.updatedAt || m.updated_at)) : new Date().toISOString()
+          updated_at: (() => { const val = m.updatedAt || m.updated_at; return val ? (val instanceof Date ? val.toISOString() : String(val)) : new Date().toISOString(); })()
         };
 
         console.log('[STAFF SYNC] Preparing staff');

@@ -503,7 +503,8 @@ export const dbService = {
       'users', 'customers', 'credits', 'payments', 'reminders',
       'non_inventory_products', 'remittances', 'notifications',
       'audit_logs', 'attendance', 'login_history', 'expenses',
-      'purchases', 'creditors'
+      'purchases', 'creditors', 'settings', 'products', 'variants',
+      'staff', 'sales', 'sale_items'
     ];
     sqlite.transaction(() => {
       for (const t of tablesWantTenant) {
@@ -1967,7 +1968,7 @@ export const dbService = {
       // Parse permissions JSON if exists
       return {
         ...staff,
-        permissions: staff.permissions ? JSON.parse(staff.permissions) : []
+        permissions: staff.permissions ? (() => { try { return JSON.parse(staff.permissions); } catch { return [staff.permissions]; } })() : []
       };
     }
     return null;
