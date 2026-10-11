@@ -17,7 +17,7 @@ const Layout: React.FC<LayoutProps> = ({ children, showNavigation = true, fullWi
   const { isAuthenticated, isAdmin } = useAuth();
   const { isOffline } = useApp();
   const { deviceMode } = useDevices();
-  const { t } = useLanguage();
+  const { language, setLanguage, t } = useLanguage();
   const [windowWidth, setWindowWidth] = useState<number>(typeof window !== 'undefined' ? window.innerWidth : 0);
   
   useEffect(() => {
@@ -57,6 +57,30 @@ const Layout: React.FC<LayoutProps> = ({ children, showNavigation = true, fullWi
           <span>{t('offlineMode')}</span>
         </div>
       )}
+
+      {/* Floating Quick Language Switcher */}
+      <div className="fixed top-3 right-3 z-40 flex items-center gap-1 bg-white/90 backdrop-blur-md shadow-md border border-gray-200/70 rounded-full p-1 text-[11px] font-bold">
+        <button
+          type="button"
+          onClick={() => setLanguage('en')}
+          className={cn(
+            "px-2.5 py-1 rounded-full transition-all duration-200 flex items-center gap-1",
+            language === 'en' ? "bg-amber-600 text-white shadow-sm" : "text-gray-600 hover:text-gray-900"
+          )}
+        >
+          EN
+        </button>
+        <button
+          type="button"
+          onClick={() => setLanguage('tl')}
+          className={cn(
+            "px-2.5 py-1 rounded-full transition-all duration-200 flex items-center gap-1",
+            language === 'tl' ? "bg-amber-600 text-white shadow-sm" : "text-gray-600 hover:text-gray-900"
+          )}
+        >
+          TL
+        </button>
+      </div>
       
       {/* Main Content */}
       <main className={cn(
