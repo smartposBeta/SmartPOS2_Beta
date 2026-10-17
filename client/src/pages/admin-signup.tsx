@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation } from 'wouter';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Store, ArrowLeft, Lock, X, Unlock, Loader2, Building2, User as UserIcon, Smartphone, Mail, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Store, ArrowLeft, Lock, Unlock, Loader2, Building2, User as UserIcon, Smartphone, Mail, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -29,6 +29,8 @@ type DeviceStatus = {
   bound: boolean;
   identityVerified?: boolean;
   localAccountPresent?: boolean;
+  serverLocalAccountPresent?: boolean;
+  deviceResetReady?: boolean;
   tenant?: {
     id: string;
     storeName?: string;
@@ -54,20 +56,12 @@ const AdminSignup: React.FC = () => {
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
   const [showUnbindConfirm, setShowUnbindConfirm] = useState(false);
   const [unbindLoading, setUnbindLoading] = useState(false);
+  const [ownerCredentials, setOwnerCredentials] = useState({ username: '', password: '' });
+  const [resetCleanupScope, setResetCleanupScope] = useState<{ tenantId: string; accountId: string } | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [statusError, setStatusError] = useState<string | null>(null);
   const { login, unbindDevice } = useAuth();
   const { toast } = useToast();
-
-  useEffect(() => {
-    const hasToken = typeof localStorage !== 'undefined' && !!localStorage.getItem('smartpos_token');
-    const hasUser = typeof localStorage !== 'undefined' && !!localStorage.getItem('smartpos_user');
-    if (!hasToken && !hasUser) {
-      AuthService.purgeLocalState({ skipApiCall: true }).catch(e =>
-        console.warn('[admin-signup] Mount purge error (non-fatal):', e)
-      );
-    }
-  }, []);
 
   const checkDeviceStatus = useCallback(async () => {
     setStatusLoading(true);
@@ -75,14 +69,20 @@ const AdminSignup: React.FC = () => {
     setDeviceStatus(null);
     try {
       const response: DeviceStatus = await api.get('/api/tenants/device-status');
-      if (typeof response?.bound !== 'boolean' || typeof response?.identityVerified !== 'boolean') {
+      if (
+        typeof response?.bound !== 'boolean'
+        || typeof response?.identityVerified !== 'boolean'
+        || typeof response?.deviceResetReady !== 'boolean'
+      ) {
         throw new Error('Device status response was incomplete or from an unsupported server version');
       }
       const identityVerified = response.identityVerified === true;
+      const browserAccountPresent = await AuthService.hasLocalAdminAccount();
       const data = {
         ...response,
         identityVerified,
-        localAccountPresent: response.localAccountPresent === true,
+        serverLocalAccountPresent: response.localAccountPresent === true,
+        localAccountPresent: response.localAccountPresent === true || browserAccountPresent,
         tenant: identityVerified ? response.tenant : null,
         admin: identityVerified ? response.admin : null,
       };
@@ -91,11 +91,14 @@ const AdminSignup: React.FC = () => {
         setIsLocked(true);
       } else {
         setIsLocked(false);
+        setResetCleanupScope(null);
       }
+      return !data.bound && !data.localAccountPresent;
     } catch (e) {
       console.warn('Failed to verify device binding status:', e);
-      setIsLocked(false);
+      setIsLocked(true);
       setStatusError('Device binding could not be verified. Retry before creating an account.');
+      return false;
     } finally {
       setStatusLoading(false);
     }
@@ -108,27 +111,94 @@ const AdminSignup: React.FC = () => {
   const handleConfirmUnbind = async () => {
     setUnbindLoading(true);
     try {
-      const r = await unbindDevice();
+      if (
+        !deviceStatus?.bound
+        && !deviceStatus?.serverLocalAccountPresent
+        && deviceStatus?.localAccountPresent
+      ) {
+        const localScope = await AuthService.verifyLocalAdminCredentials(
+          ownerCredentials.username,
+          ownerCredentials.password
+        );
+        if (!localScope) {
+          setOwnerCredentials(current => ({ ...current, password: '' }));
+          toast({ title: 'Owner verification failed', description: 'Credentials did not match the local admin account on this browser.', variant: 'destructive' });
+          return;
+        }
+        try {
+          await AuthService.purgeDeviceTenantState(localScope.tenantId, localScope.accountId);
+        } catch (error: any) {
+          setResetCleanupScope(localScope);
+          setStatusError(error?.message || 'Local cleanup failed. Retry before creating an account.');
+          setIsLocked(true);
+          return;
+        }
+        setShowUnbindConfirm(false);
+        setOwnerCredentials({ username: '', password: '' });
+        const ready = await checkDeviceStatus();
+        if (!ready) {
+          toast({ title: 'Reset needs attention', description: 'The device still reports a blocking local account. Retry status or contact support.', variant: 'destructive' });
+          return;
+        }
+        toast({ title: 'Local account reset verified', description: 'No server binding or blocking local account remains.' });
+        return;
+      }
+
+      const r = await unbindDevice({
+        adminUsername: ownerCredentials.username,
+        adminPassword: ownerCredentials.password
+      });
       if (!r.success) {
+        if (!r.resetCommitted) {
+          setOwnerCredentials(current => ({ ...current, password: '' }));
+        }
+        if (r.resetCommitted && r.tenantId && r.accountId) {
+          setResetCleanupScope({ tenantId: r.tenantId, accountId: r.accountId });
+          setStatusError(r.error || 'The server reset the binding, but local cleanup did not finish. Retry cleanup before creating an account.');
+          setIsLocked(true);
+        }
         toast({ title: 'Unbind Failed', description: r.error || 'Unable to unbind device.', variant: 'destructive' });
         return;
       }
-      toast({
-        title: 'Device Successfully Unbound',
-        description: 'All local data has been erased. Device is ready for a new account.',
-        duration: 5000,
-      });
       setShowUnbindConfirm(false);
-      await checkDeviceStatus();
-      if (typeof window !== 'undefined') {
-        setTimeout(() => window.location.reload(), 800);
+      setOwnerCredentials({ username: '', password: '' });
+      const ready = await checkDeviceStatus();
+      if (!ready) {
+        toast({
+          title: 'Reset needs attention',
+          description: 'The device is still bound or local account data remains. Retry status or contact support.',
+          variant: 'destructive'
+        });
+        return;
       }
+      toast({ title: 'Device reset verified', description: 'The current device is ready for account setup.' });
     } catch (e: any) {
+      setOwnerCredentials(current => ({ ...current, password: '' }));
       toast({
         title: 'Unbind Failed',
         description: e?.message || String(e) || 'Unexpected error during unbind.',
         variant: 'destructive',
       });
+    } finally {
+      setUnbindLoading(false);
+    }
+  };
+
+  const retryLocalCleanup = async () => {
+    if (!resetCleanupScope) return;
+    setUnbindLoading(true);
+    try {
+      await AuthService.purgeDeviceTenantState(resetCleanupScope.tenantId, resetCleanupScope.accountId);
+      setResetCleanupScope(null);
+      const ready = await checkDeviceStatus();
+      if (ready) {
+        setStatusError(null);
+        toast({ title: 'Device reset verified', description: 'The current device is ready for account setup.' });
+      } else {
+        setStatusError('Local cleanup completed, but the server still reports a blocking device account. Retry status or contact support.');
+      }
+    } catch (error: any) {
+      setStatusError(error?.message || 'Local cleanup failed. Retry before creating an account.');
     } finally {
       setUnbindLoading(false);
     }
@@ -185,6 +255,12 @@ const AdminSignup: React.FC = () => {
           <AlertTriangle className="w-10 h-10 mx-auto text-amber-500" />
           <h2 className="text-lg font-bold text-gray-900">Binding status unavailable</h2>
           <p className="text-sm text-gray-600">{statusError}</p>
+          {resetCleanupScope && (
+            <Button onClick={retryLocalCleanup} disabled={unbindLoading} variant="outline" className="w-full rounded-xl">
+              {unbindLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Retry local cleanup
+            </Button>
+          )}
           <Button onClick={checkDeviceStatus} className="w-full rounded-xl">Retry status check</Button>
         </Card>
       </div>
@@ -196,7 +272,7 @@ const AdminSignup: React.FC = () => {
     const hasConfirmedBinding = deviceStatus?.bound === true;
     const storeName = identityVerified
       ? deviceStatus?.tenant?.storeName || deviceStatus?.admin?.businessName || 'Store name unavailable'
-      : 'Account identity unavailable';
+      : hasConfirmedBinding ? 'Account identity unavailable' : 'Local account data found';
     const ownerName = identityVerified ? deviceStatus?.admin?.ownerName || deviceStatus?.admin?.username : null;
     const subdomain = identityVerified ? deviceStatus?.tenant?.subdomain : undefined;
     const adminMobile = identityVerified ? deviceStatus?.admin?.mobile : undefined;
@@ -225,10 +301,10 @@ const AdminSignup: React.FC = () => {
                 {hasConfirmedBinding ? 'Device Already Registered' : 'Account Setup Needs Attention'}
               </h2>
               <p className="text-sm text-gray-500 font-medium max-w-sm mx-auto leading-relaxed">
-                This terminal is linked to an existing account.
+                {hasConfirmedBinding ? 'This terminal is linked to an existing account.' : 'A local admin account exists, but no device binding is recorded.'}
                 {hasConfirmedBinding
                   ? identityVerified ? ' Verified account details are shown below.' : ' The account identity could not be verified, so cached details are hidden.'
-                  : ' Local account data exists, but no explicit device binding can be verified. Sign in to restore the binding.'}
+                  : ' This local data is not shown as a verified store. Authenticate as its owner to clear the stale device account state.'}
               </p>
             </div>
 
@@ -308,12 +384,11 @@ const AdminSignup: React.FC = () => {
                   </div>
                 )}
 
-                {hasConfirmedBinding && <div className="mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl">
+                {(hasConfirmedBinding || deviceStatus?.localAccountPresent) && <div className="mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl">
                   <div className="flex items-start gap-2.5">
                     <AlertTriangle className="w-4.5 h-4.5 text-amber-600 flex-shrink-0 mt-0.5" />
                     <p className="text-[11px] font-semibold text-amber-800 leading-relaxed">
-                      Unbinding this device will <span className="font-black underline">permanently erase ALL local data</span> including
-                      products, sales, staff records, and settings. The device will be completely blank and ready for a new account.
+                      Reset removes this account’s device binding, local server session, and matching browser cache. It does not delete the cloud account, cloud inventory, or unrelated tenant records. Copies may remain in backups or other storage.
                     </p>
                   </div>
                 </div>}
@@ -339,71 +414,94 @@ const AdminSignup: React.FC = () => {
                 </Button>
               )}
 
-              {hasConfirmedBinding && (
+              {(hasConfirmedBinding || deviceStatus?.localAccountPresent) && (
                 <Button
-                  onClick={() => setShowUnbindConfirm(true)}
+                  onClick={() => {
+                    setOwnerCredentials({ username: adminUsername || '', password: '' });
+                    setShowUnbindConfirm(true);
+                  }}
                   variant="destructive"
                   className="w-full rounded-2xl py-5 font-black text-sm shadow-lg shadow-red-100 transition-all active:scale-[0.98] bg-white text-red-600 border-2 border-red-200 hover:bg-red-50 hover:text-red-700 hover:border-red-300"
                 >
                   <Unlock className="w-4.5 h-4.5 mr-2" />
-                  Unbind & Factory Reset Device
+                  Verify Owner & Reset Device
                 </Button>
               )}
             </div>
           </motion.div>
         </div>
 
-        <AlertDialog open={showUnbindConfirm} onOpenChange={setShowUnbindConfirm}>
+        <AlertDialog
+          open={showUnbindConfirm}
+          onOpenChange={(open) => {
+            setShowUnbindConfirm(open);
+            if (!open) setOwnerCredentials({ username: '', password: '' });
+          }}
+        >
           <AlertDialogContent className="rounded-[2rem] max-w-md border-0 shadow-2xl">
             <AlertDialogHeader className="text-center pb-2">
               <div className="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
                 <AlertTriangle className="w-8 h-8 text-red-500" />
               </div>
               <AlertDialogTitle className="text-xl font-black tracking-tight text-gray-900">
-                Confirm Device Factory Reset
+                Verify Owner and Reset Device
               </AlertDialogTitle>
               <AlertDialogDescription className="text-sm font-medium text-gray-500 leading-relaxed pt-1">
-                You are about to unbind this device and perform a complete data wipe.
-                This action is irreversible and will erase everything from this device:
-              </AlertDialogDescription>
-            </AlertDialogHeader>
+                  Enter the current store owner’s sign-in credentials. They are checked against the bound tenant, or against the exact local account when no binding exists. No cloud account or cloud inventory is deleted.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
 
-            <div className="px-1 py-3 space-y-2">
-              {[
-                'All products, variants & inventory records',
-                'Complete sales history & receipts',
-                'Staff accounts, permissions & remittances',
-                'Customer records, credits & payments',
-                'All settings, configuration & device preferences',
-                'Admin account & session data'
-              ].map((item) => (
-                <div key={item} className="flex items-center gap-2.5 text-xs text-gray-600 font-medium bg-red-50 px-3 py-2 rounded-xl">
-                  <X className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
-                  <span>{item}</span>
+              <div className="px-1 py-3 space-y-4 text-left">
+                <div className="space-y-1.5">
+                  <label htmlFor="reset-owner-username" className="text-sm font-semibold text-gray-700">Owner username or sign-in ID</label>
+                  <Input
+                    id="reset-owner-username"
+                    autoComplete="username"
+                    value={ownerCredentials.username}
+                    onChange={(event) => setOwnerCredentials(current => ({ ...current, username: event.target.value }))}
+                    placeholder="Enter the current owner’s sign-in"
+                    disabled={unbindLoading}
+                    required
+                  />
                 </div>
-              ))}
-            </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="reset-owner-password" className="text-sm font-semibold text-gray-700">Current password</label>
+                  <Input
+                    id="reset-owner-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={ownerCredentials.password}
+                    onChange={(event) => setOwnerCredentials(current => ({ ...current, password: event.target.value }))}
+                    placeholder="Enter the owner password"
+                    disabled={unbindLoading}
+                    required
+                  />
+                </div>
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  Only this device’s local account/session state and matching browser cache are cleared. Local data may remain in backups; this is not a secure data-erasure guarantee.
+                </p>
+              </div>
 
-            <AlertDialogFooter className="flex-col sm:flex-col gap-2 pt-2">
-              <AlertDialogCancel className="w-full rounded-xl h-12 font-bold text-sm border-gray-200">
-                Cancel — Keep Current Data
-              </AlertDialogCancel>
-              <AlertDialogAction
-                onClick={(e) => { e.preventDefault(); handleConfirmUnbind(); }}
-                disabled={unbindLoading}
-                className="w-full rounded-xl h-12 font-black text-sm bg-red-600 hover:bg-red-700 shadow-lg shadow-red-200"
-              >
-                {unbindLoading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Erasing Everything…
-                  </>
-                ) : (
-                  <>
-                    <Unlock className="w-4 h-4 mr-2" />
-                    Yes — Unbind & Reset Everything
-                  </>
-                )}
+              <AlertDialogFooter className="flex-col sm:flex-col gap-2 pt-2">
+                <AlertDialogCancel className="w-full rounded-xl h-12 font-bold text-sm border-gray-200">
+                  Cancel
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => { e.preventDefault(); handleConfirmUnbind(); }}
+                  disabled={unbindLoading || !ownerCredentials.username.trim() || !ownerCredentials.password}
+                  className="w-full rounded-xl h-12 font-black text-sm bg-red-600 hover:bg-red-700 shadow-lg shadow-red-200"
+                >
+                  {unbindLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Verifying & resetting…
+                    </>
+                  ) : (
+                    <>
+                      <Unlock className="w-4 h-4 mr-2" />
+                      Confirm owner reset
+                    </>
+                  )}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

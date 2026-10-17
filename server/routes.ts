@@ -19,6 +19,32 @@ import bcrypt from "bcryptjs";
 import { getSupabase } from "./supabase";
 import { DeveloperService } from "./developer-service";
 
+const adminRoles = new Set(['admin', 'owner', 'superuser']);
+
+const adminIdentifierMatches = (admin: any, identifier: string) => {
+  const input = String(identifier || '').trim();
+  const normalizedInput = input.toLowerCase();
+  const inputDigits = input.replace(/\D/g, '');
+  const username = String(admin?.username || '').trim().toLowerCase();
+  const email = String(admin?.email || '').trim().toLowerCase();
+  const mobile = String(admin?.mobile || '').replace(/\D/g, '');
+  return normalizedInput === username || normalizedInput === email || (!!inputDigits && inputDigits === mobile);
+};
+
+const verifyAccountPassword = async (enteredPassword: string, storedValue: unknown): Promise<boolean> => {
+  const storedPassword = String(storedValue || '').trim();
+  if (!enteredPassword || !storedPassword) return false;
+  if (/^\$2[aby]\$/.test(storedPassword)) {
+    try {
+      return await bcrypt.compare(enteredPassword, storedPassword);
+    } catch {
+      return false;
+    }
+  }
+  const sha256Hex = createHash('sha256').update(enteredPassword).digest('hex');
+  return sha256Hex.toLowerCase() === storedPassword.toLowerCase() || enteredPassword === storedPassword;
+};
+
 
 const getStaffAdminContext = (req: Request) => {
   const authHeader = req.headers.authorization;
@@ -81,157 +107,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Tenant registration (no auth required, no tenant check needed)
-  app.post("/api/tenants/register", async (req: Request, res: Response) => {
-    try {
-      console.log("=== REGISTERING TENANT ===");
-      const { storeName, subdomain, username, password } = req.body;
-      console.log("Data:", { storeName, subdomain, username });
-
-      const localBoundTenantId = await dbService.getBoundTenantId();
-      if (!localBoundTenantId && dbService.hasLocalAccount()) {
-        return res.status(409).json({
-          error: 'LOCAL_ACCOUNT_REQUIRES_BINDING',
-          message: 'Local admin data exists without an explicit device binding. Sign in to restore the binding before registering another store.'
-        });
-      }
-      
-      const supabase = getSupabase();
-      if (!supabase) {
-        return res.status(500).json({ error: "Cloud not configured" });
-      }
-
-      // STRICT CLOUD-FIRST DEVICE UNBIND & VERIFICATION:
-      // Query Supabase Cloud for active tenants and admin users.
-      try {
-        const [{ data: cloudTenants, error: tenantsError }, { data: cloudAdminUsers, error: usersError }] = await Promise.all([
-          supabase.from('tenants').select('id, subdomain, store_name'),
-          supabase.from('users').select('id, username, tenant_id, role')
-        ]);
-        if (tenantsError || usersError) throw tenantsError || usersError;
-
-        const activeAdmins = (cloudAdminUsers || []).filter((u: any) => u.role === 'admin' || u.role === 'owner');
-        const activeTenants = cloudTenants || [];
-
-        console.log(`[CLOUD VERIFICATION] Found ${activeTenants.length} tenants and ${activeAdmins.length} admin users in Supabase Cloud.`);
-
-        // IF NO ADMIN ACCOUNTS OR NO TENANTS EXIST IN SUPABASE CLOUD:
-        if (activeTenants.length === 0 || activeAdmins.length === 0) {
-          console.log('[CLOUD UNBIND] No active admin accounts exist in Supabase Cloud. Unbinding local device completely!');
-          dbService.clearBoundTenantId();
-        } else {
-          // Check if device_bound_tenant_id exists in local settings
-          const boundTenantId = await dbService.getBoundTenantId();
-          if (boundTenantId) {
-            const isBoundTenantActive = activeTenants.some((t: any) => t.id === boundTenantId);
-            const isBoundAdminActive = activeAdmins.some((u: any) => u.tenant_id === boundTenantId);
-
-            if (!isBoundTenantActive || !isBoundAdminActive) {
-              console.log(`[CLOUD UNBIND] Bound tenant ${boundTenantId} no longer has an active admin in Supabase Cloud. Unbinding local device!`);
-              dbService.clearBoundTenantId();
-            } else {
-              const requestedSubdomain = String(subdomain || '').toLowerCase().trim();
-              const boundTenantObj = activeTenants.find((t: any) => t.id === boundTenantId);
-              if (boundTenantObj && boundTenantObj.subdomain === requestedSubdomain) {
-                console.log(`[DEVICE LOCK] User is re-registering bound tenant ${requestedSubdomain}. Allowing!`);
-              } else {
-                console.warn(`[DEVICE LOCK REJECT] Device is bound to active cloud store: ${boundTenantObj?.store_name || boundTenantId}`);
-                return res.status(403).json({
-                  error: "DEVICE_BOUND_TO_OTHER_ADMIN",
-                  message: "This device/system is registered to another active Admin store account. Creating additional Admin accounts on this device is restricted to protect database integrity."
-                });
-              }
-            }
-          }
-        }
-      } catch (checkErr) {
-        console.warn('[CLOUD VERIFICATION WARNING] Registration blocked because device status could not be verified:', checkErr);
-        return res.status(503).json({
-          error: 'DEVICE_STATUS_UNVERIFIED',
-          message: 'The device account could not be verified with the cloud service. No local account data was changed; retry when the connection is available.'
-        });
-      }
-      
-      // 1. Create tenant
-      const tenantId = randomUUID();
-      console.log("Creating tenant with ID:", tenantId);
-      const { data: tenant, error: tenantError } = await supabase
-        .from("tenants")
-        .insert({ id: tenantId, store_name: storeName, subdomain: subdomain.toLowerCase() })
-        .select()
-        .single();
-      
-      if (tenantError) {
-        console.error("TENANT ERROR:", tenantError);
-        return res.status(400).json({ error: tenantError.message });
-      }
-      console.log("TENANT CREATED:", tenant);
-      
-      // 2. Hash password
-      const hashedPassword = await bcrypt.hash(password, 10);
-      console.log("Password hashed, starts with:", hashedPassword.substring(0, 20));
-      
-      // 3. Create admin user - ONLY the minimal data we KNOW is in your users table!
-      // Your users table only has: id, tenant_id, username, password, role
-      const userId = randomUUID();
-      const minimalUserData: any = {
-        id: userId,
-        tenant_id: tenant.id,
-        username,
-        password: hashedPassword,
-        role: "admin"
-      };
-      
-      console.log("Creating user with data:", minimalUserData);
-      
-      const { data: user, error: userError } = await supabase
-        .from("users")
-        .insert(minimalUserData)
-        .select()
-        .single();
-      
-      if (userError) {
-        console.error("USER ERROR:", userError);
-        return res.status(400).json({ 
-          error: "Failed to create user.",
-          details: userError 
-        });
-      }
-      
-      console.log("USER CREATED:", user);
-
-      // Save to local SQLite database as well
-      try {
-        const sqlite = initSQLite();
-        sqlite.prepare(`
-          INSERT OR REPLACE INTO users (id, username, password, role, businessName, tenant_id)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).run(userId, username, hashedPassword, 'admin', storeName, tenant.id);
-        dbService.setBoundTenantId(tenant.id);
-        console.log("SAVED REGISTERED ADMIN TO LOCAL SQLITE DB");
-      } catch (localDbErr) {
-        console.warn("Failed to save registered admin to local DB:", localDbErr);
-      }
-      
-      dbService.setBoundTenantId(tenant.id);
-      res.status(201).json({ success: true, tenant, user });
-    } catch (error) {
-      console.error("TENANT REGISTRATION ERROR:", error);
-      res.status(500).json({ error: "Tenant registration failed", details: error });
-    }
+  // Legacy route retained for existing links; all account creation uses the canonical admin signup flow.
+  app.post('/api/tenants/register', (_req: Request, res: Response) => {
+    return res.status(410).json({ error: 'This registration route has been retired. Use /admin-signup to create an account.' });
   });
-
   app.get('/api/tenants/device-status', async (req: Request, res: Response) => {
     try {
       const boundTenantId = await dbService.getBoundTenantId();
       if (!boundTenantId) {
-        const localAccountPresent = dbService.hasLocalAccount();
+        const deviceResetReady = dbService.isDeviceSetupResetReady();
+        const localAccountPresent = !deviceResetReady && dbService.hasLocalAccount();
         return res.json({
           bound: false,
           tenant: null,
           admin: null,
           identityVerified: false,
           localAccountPresent,
+          deviceResetReady,
           message: localAccountPresent
             ? 'No explicit device binding exists, but local account data is present. Account identity cannot be verified.'
             : 'Device is not bound to any account. Ready for new registration.'
@@ -243,51 +135,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let identityVerified = false;
 
       if (useCloud()) {
-        try {
-          const supabase = getSupabase();
-          if (supabase) {
-            const [{ data: cloudTenant, error: tenantError }, { data: cloudAdmins, error: adminsError }] = await Promise.all([
-              supabase
-              .from('tenants')
-              .select('id, store_name, subdomain, created_at')
-              .eq('id', boundTenantId)
-              .maybeSingle(),
-              supabase
-                .from('users')
-                .select('id, username, owner_name, business_name, mobile, email, role')
-                .eq('tenant_id', boundTenantId)
-                .in('role', ['admin', 'owner', 'superuser'])
-            ]);
-            if (tenantError || adminsError) throw tenantError || adminsError;
-
-            if (cloudTenant) {
-              tenantInfo = {
-                id: cloudTenant.id,
-                storeName: cloudTenant.store_name,
-                subdomain: cloudTenant.subdomain,
-                createdAt: cloudTenant.created_at
-              };
-            }
-
-            if (cloudAdmins && cloudAdmins.length > 0) {
-              const first = cloudAdmins.find((user: any) => user.role === 'owner')
-                || cloudAdmins.find((user: any) => user.role === 'admin')
-                || cloudAdmins[0];
-              adminInfo = {
-                id: first.id,
-                username: first.username,
-                ownerName: first.owner_name || first.username,
-                businessName: first.business_name || null,
-                mobile: first.mobile || null,
-                email: first.email || null,
-                role: first.role || 'admin'
-              };
-            }
-            identityVerified = Boolean(tenantInfo || adminInfo);
-          }
-        } catch (cloudErr) {
-          console.warn('[DEVICE-STATUS] Cloud identity lookup failed:', cloudErr);
+        const supabase = getSupabase();
+        if (!supabase) {
+          return res.status(503).json({ error: 'Cloud identity verification is unavailable. Retry before resetting or registering.' });
         }
+        const [{ data: cloudTenant, error: tenantError }, { data: cloudAdmins, error: adminsError }] = await Promise.all([
+          supabase
+            .from('tenants')
+            .select('id, store_name, subdomain, created_at')
+            .eq('id', boundTenantId)
+            .maybeSingle(),
+          supabase
+            .from('users')
+            .select('id, tenant_id, username, role')
+            .eq('tenant_id', boundTenantId)
+            .in('role', ['admin', 'owner', 'superuser'])
+        ]);
+        if (tenantError || adminsError) {
+          throw tenantError || adminsError;
+        }
+
+        if (cloudTenant) {
+          tenantInfo = {
+            id: cloudTenant.id,
+            storeName: cloudTenant.store_name,
+            subdomain: cloudTenant.subdomain,
+            createdAt: cloudTenant.created_at
+          };
+        }
+        if (cloudAdmins?.length) {
+          const first = cloudAdmins.find((user: any) => user.role === 'owner')
+            || cloudAdmins.find((user: any) => user.role === 'admin')
+            || cloudAdmins[0];
+          adminInfo = {
+            id: first.id,
+            username: first.username,
+            ownerName: first.username,
+            businessName: tenantInfo?.storeName || null,
+            role: first.role || 'admin'
+          };
+        }
+        identityVerified = Boolean(tenantInfo && adminInfo);
       }
 
       res.json({
@@ -295,35 +183,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
         tenant: tenantInfo,
         admin: adminInfo,
         identityVerified,
+        localAccountPresent: false,
+        deviceResetReady: false,
         message: identityVerified
           ? 'Device is bound to an account verified by its exact tenant ID.'
           : 'Device is bound, but the account identity could not be verified. Cached account details are not shown.'
       });
     } catch (e: any) {
-      console.error('[DEVICE-STATUS] Error:', e);
-      res.status(500).json({
-        bound: false,
-        tenant: null,
-        admin: null,
-        error: 'Failed to check device binding status',
-        details: e?.message || String(e)
-      });
+      console.error('[DEVICE-STATUS] Status verification failed:', e?.message || String(e));
+      res.status(503).json({ error: 'Failed to verify device binding status. Retry before continuing.' });
     }
   });
 
   app.post('/api/tenants/unbind-device', async (req: Request, res: Response) => {
     try {
-      console.log('[UNBIND-DEVICE] Device unbinding request received. Bypassing password gate per user requirement.');
+      const username = String(req.body?.adminUsername || '').trim();
+      const password = String(req.body?.adminPassword || '');
+      if (!username || !password) {
+        return res.status(401).json({ error: 'The current store owner username and password are required.' });
+      }
 
-      const diagnostics = dbService.clearBoundTenantId();
+      const boundTenantId = await dbService.getBoundTenantId();
+      let verifiedOwner: any = null;
+      if (boundTenantId && useCloud()) {
+        const supabase = getSupabase();
+        if (!supabase) {
+          return res.status(503).json({ error: 'Cloud credential verification is unavailable. No device state was changed.' });
+        }
+        const { data: cloudAdmins, error: cloudError } = await supabase
+          .from('users')
+          .select('id, tenant_id, username, password, role')
+          .eq('tenant_id', boundTenantId)
+          .in('role', ['admin', 'owner', 'superuser']);
+        if (cloudError) {
+          return res.status(503).json({ error: 'The bound account could not be verified with the cloud service. No device state was changed.' });
+        }
+        const matches = (cloudAdmins || []).filter((admin: any) =>
+          String(admin.tenant_id) === boundTenantId
+          && adminRoles.has(String(admin.role || '').toLowerCase())
+          && adminIdentifierMatches(admin, username)
+        );
+        if (matches.length !== 1 || !await verifyAccountPassword(password, matches[0]?.password)) {
+          return res.status(401).json({ error: 'Owner credentials did not match an admin account in the bound store.' });
+        }
+        verifiedOwner = matches[0];
+      } else {
+        const localAdmins = boundTenantId
+          ? dbService.getLocalAdminByCredential(boundTenantId, username)
+          : dbService.getLocalAdminAccounts().filter((admin: any) => adminIdentifierMatches(admin, username));
+        const matches = (localAdmins || []).filter((admin: any) =>
+          (!boundTenantId || String(admin.tenant_id) === boundTenantId)
+          && adminRoles.has(String(admin.role || '').toLowerCase())
+          && adminIdentifierMatches(admin, username)
+        );
+        if (matches.length !== 1 || !await verifyAccountPassword(password, matches[0]?.password)) {
+          return res.status(401).json({ error: 'Owner credentials did not match the local account for this device.' });
+        }
+        verifiedOwner = matches[0];
+      }
 
-      res.json({
+      const tenantId = String(verifiedOwner?.tenant_id || '');
+      const accountId = String(verifiedOwner?.id || '');
+      if (!tenantId || !accountId || (boundTenantId && tenantId !== boundTenantId)) {
+        return res.status(403).json({ error: 'The verified account is not the account currently associated with this device.' });
+      }
+
+      const resetScope = dbService.clearBoundTenantId(boundTenantId, tenantId, accountId);
+      return res.json({
         success: true,
-        message: 'Device successfully unbound from local tenant lock. All local data has been purged.',
-        diagnostics: diagnostics || null,
+        message: 'Device binding and its local session were reset. Cloud account and cloud data were not deleted.',
         clientPurge: {
-          purgeAllLocalStorage: true,
-          purgeDexieTables: true,
+          tenantId: resetScope.tenantId,
+          accountId: resetScope.accountId,
           localStorageKeys: [
             'smartpos_user',
             'smartpos_token',
@@ -332,20 +263,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
             'smartpos_guest_mode',
             'smartpos_guest_user_id',
             'smartpos_guest_expiry',
-            'smartpos_device_mode',
-            'smartpos_external_devices',
-            'smartpos_default_printer',
             'admin_username',
             'admin_password',
-            'admin_remember_me',
-            'customer_checker_tenant_id',
-            'customer_checker_store_name',
-            'routerUrl'
+            'admin_remember_me'
           ]
         }
       });
     } catch (e: any) {
-      res.status(500).json({ error: 'Failed to unbind device', details: e?.message || String(e) });
+      console.error('[UNBIND-DEVICE] Reset was not committed:', e?.message || String(e));
+      res.status(500).json({ error: e?.message || 'Failed to reset the device binding. No success was reported.' });
     }
   });
 
@@ -529,9 +455,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Auth API
   // Register Admin endpoint (for direct admin signup)
   app.post('/api/auth/register-admin', async (req: Request, res: Response) => {
+    let cloudClient: any = null;
+    let cloudTenantCreated = false;
+    let cloudUserCreated = false;
+    let finalTenantId = '';
+    let userId = '';
     try {
-      console.log('=== REGISTERING ADMIN ACCOUNT ===');
-      const { id, username, password, role, businessName, ownerName, mobile, email, tenantId } = req.body;
+      const { username, password, businessName, ownerName, mobile, email } = req.body || {};
       const cleanUsername = String(username || mobile || '').trim();
       const rawPassword = String(password || '');
 
@@ -539,63 +469,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: 'Username/mobile and password are required' });
       }
 
-      const existingLocalAdmin = dbService.getAdmin();
-      if (dbService.hasLocalAccount() && (!existingLocalAdmin || !id || existingLocalAdmin.id !== id)) {
+      const setupResetReady = dbService.isDeviceSetupResetReady();
+      if ((await dbService.getBoundTenantId() || dbService.hasLocalAccount()) && !setupResetReady) {
         return res.status(409).json({
-          error: 'An admin account already exists on this device. Unbind the device first before creating a new admin.',
+          error: 'An account or device binding already exists. Verify its owner credentials and reset first.',
           code: 'ADMIN_ALREADY_EXISTS'
         });
       }
 
-      if (useCloud()) {
-        try {
-          const supabase = getSupabase();
-          if (supabase) {
-            const cleanLower = cleanUsername.toLowerCase().trim();
-            const cleanDigits = cleanLower.replace(/\D/g, '');
-            const { data: cloudUsers, error: cloudErr } = await supabase
-              .from('users')
-              .select('id, username, mobile, email, owner_name, business_name, role');
-            if (!cloudErr && Array.isArray(cloudUsers)) {
-              const cloudMatch = cloudUsers.find((u: any) => {
-                const roleStr = String(u.role || '').toLowerCase();
-                const isAdminRole = roleStr === 'admin' || roleStr === 'owner' || roleStr === 'superuser';
-                if (!isAdminRole) return false;
-                if (id && String(u.id) === String(id)) return false;
-                const uName = String(u.username || '').toLowerCase().trim();
-                const uMobile = String(u.mobile || '').replace(/\D/g, '');
-                const uEmail = String(u.email || '').toLowerCase().trim();
-                const uOwner = String(u.owner_name || '').toLowerCase().trim();
-                const uBiz = String(u.business_name || '').toLowerCase().trim();
-                return (
-                  uName === cleanLower ||
-                  (cleanDigits && uMobile && uMobile === cleanDigits) ||
-                  (uEmail && uEmail === cleanLower) ||
-                  (uOwner && uOwner === cleanLower) ||
-                  (uBiz && uBiz === cleanLower)
-                );
-              });
-              if (cloudMatch) {
-                return res.status(409).json({
-                  error: 'Admin username already registered in Supabase Cloud. Use existing account or unbind device.',
-                  code: 'ADMIN_ALREADY_EXISTS_IN_CLOUD'
-                });
-              }
-            }
-          }
-        } catch (cloudCheckErr: any) {
-          console.warn('[REGISTER ADMIN] Cloud duplicate check error (non-blocking, allowing through):', cloudCheckErr?.message || String(cloudCheckErr));
-        }
-      }
-
-      // Hash password if not already bcrypt hashed
-      let hashedPassword = rawPassword;
-      if (!rawPassword.startsWith('$2a$') && !rawPassword.startsWith('$2b$')) {
-        hashedPassword = await bcrypt.hash(rawPassword, 10);
-      }
-
-      const userId = id || randomUUID();
-      const finalTenantId = tenantId || randomUUID();
+      finalTenantId = randomUUID();
+      userId = randomUUID();
+      const hashedPassword = await bcrypt.hash(rawPassword, 10);
       const now = new Date().toISOString();
 
       const userData: any = {
@@ -603,7 +487,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         tenant_id: finalTenantId,
         username: cleanUsername,
         password: hashedPassword,
-        role: role || 'admin',
+        role: 'admin',
         businessName: businessName || 'SmartPOS Store',
         ownerName: ownerName || cleanUsername,
         mobile: mobile || cleanUsername,
@@ -612,47 +496,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
         createdAt: now
       };
 
-      // 1. Save to Supabase Cloud if available
-      const supabase = getSupabase();
-      if (supabase) {
-        try {
-          // Check/create tenant in Supabase
-          const { data: existingTenant } = await supabase.from('tenants').select('*').eq('id', finalTenantId).maybeSingle();
-          if (!existingTenant) {
-            const subdomain = (businessName || cleanUsername).toLowerCase().replace(/[^a-z0-9]/g, '') || `store-${Date.now().toString(36)}`;
-            await supabase.from('tenants').insert({
-              id: finalTenantId,
-              store_name: businessName || 'SmartPOS Store',
-              subdomain,
-              created_at: now
-            });
-          }
-
-          // Insert user to Supabase
-          const minimalUserData = {
-            id: userId,
-            tenant_id: finalTenantId,
-            username: cleanUsername,
-            password: hashedPassword,
-            role: role || 'admin'
-          };
-          await supabase.from('users').upsert(minimalUserData);
-          console.log('[REGISTER ADMIN] Upserted user into Supabase');
-        } catch (cloudErr) {
-          console.warn('[REGISTER ADMIN] Supabase sync warning (non-fatal):', cloudErr);
+      if (useCloud()) {
+        cloudClient = getSupabase();
+        if (!cloudClient) {
+          return res.status(503).json({ error: 'Cloud account creation is unavailable. No account was created; retry when connected.' });
         }
+        const { data: cloudUsers, error: lookupError } = await cloudClient
+          .from('users')
+          .select('id, username, role');
+        if (lookupError) {
+          return res.status(503).json({ error: 'Cloud account availability could not be verified. No account was created.' });
+        }
+        const usernameTaken = (cloudUsers || []).some((candidate: any) =>
+          adminRoles.has(String(candidate.role || '').toLowerCase())
+          && String(candidate.username || '').trim().toLowerCase() === cleanUsername.toLowerCase()
+        );
+        if (usernameTaken) {
+          return res.status(409).json({
+            error: 'This admin username is already registered in the cloud. Sign in to that account instead.',
+            code: 'ADMIN_ALREADY_EXISTS_IN_CLOUD'
+          });
+        }
+
+        const storeSlug = String(businessName || cleanUsername).toLowerCase().replace(/[^a-z0-9]/g, '') || 'store';
+        const subdomain = `${storeSlug}-${userId.slice(0, 8)}`;
+        cloudTenantCreated = true;
+        const { error: tenantError } = await cloudClient.from('tenants').insert({
+          id: finalTenantId,
+          store_name: userData.businessName,
+          subdomain,
+          created_at: now
+        });
+        if (tenantError) throw new Error('Cloud store creation failed. No local account was created.');
+
+        cloudUserCreated = true;
+        const { error: userError } = await cloudClient.from('users').insert({
+          id: userId,
+          tenant_id: finalTenantId,
+          username: cleanUsername,
+          password: hashedPassword,
+          role: 'admin'
+        });
+        if (userError) throw new Error('Cloud admin account creation failed. No local account was created.');
       }
 
-      // 2. Save to local SQLite
-      try {
-        dbService.saveOrUpdateUser(userData);
-        dbService.setBoundTenantId(finalTenantId);
-        console.log('[REGISTER ADMIN] Saved user to local SQLite');
-      } catch (sqlErr) {
-        console.warn('[REGISTER ADMIN] Local SQLite save warning:', sqlErr);
-      }
-
-      // 3. Create Session
       const token = randomUUID();
       const session = {
         id: randomUUID(),
@@ -664,7 +551,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         created_at: now,
         last_active_at: now
       };
-      dbService.createSession(session);
+      try {
+        dbService.commitAdminRegistration(userData, session);
+      } catch (commitError) {
+        throw commitError;
+      }
 
       const { password: _, ...userSafe } = userData;
       return res.status(201).json({
@@ -673,8 +564,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         token
       });
     } catch (err: any) {
-      console.error('[REGISTER ADMIN ERROR]:', err);
-      return res.status(500).json({ error: 'Failed to register admin', details: err?.message });
+      let rollbackComplete = true;
+      try {
+        if (cloudUserCreated && cloudClient) {
+          const { error } = await cloudClient.from('users').delete().eq('id', userId).eq('tenant_id', finalTenantId);
+          rollbackComplete = !error;
+        }
+        if (cloudTenantCreated && cloudClient) {
+          const { error } = await cloudClient.from('tenants').delete().eq('id', finalTenantId);
+          rollbackComplete = rollbackComplete && !error;
+        }
+      } catch {
+        rollbackComplete = false;
+      }
+      console.error('[REGISTER ADMIN ERROR]:', err?.message || String(err));
+      if (!rollbackComplete) {
+        return res.status(500).json({
+          error: 'Account setup failed and cloud rollback could not be confirmed. Contact support before retrying.'
+        });
+      }
+      return res.status(500).json({ error: err?.message || 'Failed to register admin. No success was reported.' });
     }
   });
 

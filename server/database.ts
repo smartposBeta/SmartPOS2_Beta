@@ -937,7 +937,7 @@ export const dbService = {
   },
   hasLocalAccount: () => {
     return Boolean(
-      db.prepare("SELECT 1 FROM users WHERE role IN ('admin', 'owner', 'superuser') LIMIT 1").get()
+      db.prepare("SELECT 1 FROM users WHERE LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser') LIMIT 1").get()
     );
   },
   saveAdmin: (user: any) => {
@@ -4090,129 +4090,140 @@ export const dbService = {
   },
 
   getBoundTenantId: async (): Promise<string | null> => {
-    try {
-      const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('device_bound_tenant_id') as any;
-      const boundId = row && row.value ? String(row.value) : null;
-
-      // If bound tenant ID exists, verify whether active tenant / user exists in Supabase Cloud or local SQLite
-      if (boundId) {
-        if (useCloud()) {
-          try {
-            const supabase = getSupabase();
-            if (supabase) {
-              const [{ data: cloudUsers, error: usersError }, { data: cloudTenants, error: tenantsError }] = await Promise.all([
-                supabase.from('users').select('id, tenant_id').eq('tenant_id', boundId),
-                supabase.from('tenants').select('id').eq('id', boundId)
-              ]);
-              if (usersError || tenantsError) throw usersError || tenantsError;
-              
-              if ((!cloudUsers || cloudUsers.length === 0) && (!cloudTenants || cloudTenants.length === 0)) {
-                console.log(`[DEVICE UNBIND] Bound tenant ${boundId} was deleted in Supabase Cloud. Automatically unbinding device!`);
-                dbService.clearBoundTenantId();
-                return null;
-              }
-            }
-          } catch (cloudErr) {
-            console.warn('[DEVICE UNBIND CHECK] Failed to query Supabase cloud:', cloudErr);
-          }
-        }
-        return boundId;
-      }
-      return null;
-    } catch {
-      return null;
-    }
+    const row = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id IS NULL')
+      .get('device_bound_tenant_id') as any;
+    return row?.value ? String(row.value) : null;
   },
 
-  clearBoundTenantId: () => {
-    interface UnbindDiagnostics {
-      purgedTables: string[];
-      skippedTables: string[];
-      rowsDeletedPerTable: Record<string, number>;
-      tenantScopeId: string | null;
-      totalRowsDeleted: number;
-    }
+  isDeviceSetupResetReady: () => {
+    const resetMarker = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id IS NULL LIMIT 1')
+      .get('device_setup_reset_ready') as any;
+    const resetTenantId = String(resetMarker?.value || '');
+    if (!resetTenantId) return false;
+    const hasLocalAdmin = Boolean(db.prepare(`
+      SELECT 1 FROM users
+      WHERE LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser')
+      LIMIT 1
+    `).get());
+    return !hasLocalAdmin;
+  },
 
-    const diagnostics: UnbindDiagnostics = {
-      purgedTables: [],
-      skippedTables: [],
-      rowsDeletedPerTable: {},
-      tenantScopeId: null,
-      totalRowsDeleted: 0,
-    };
+  clearBoundTenantId: (expectedBoundTenantId: string | null, tenantId: string, ownerUserId: string) => {
+    if (!tenantId || !ownerUserId) throw new Error('A verified tenant and owner are required to reset the device');
 
-    try {
-      const boundRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('device_bound_tenant_id') as any;
-      const boundTenantId: string | null = boundRow?.value ? String(boundRow.value) : null;
-      diagnostics.tenantScopeId = boundTenantId;
-
-      const businessTables = [
-        'products', 'variants', 'staff', 'sales', 'sale_items', 'expenses', 'purchases',
-        'creditors', 'non_inventory_products', 'remittances', 'notifications', 'customers',
-        'credits', 'payments', 'reminders', 'bulk_inventory_transactions',
-        'bulk_inventory_items', 'pending_bulk_submissions', 'staff_logins',
-        'security_questions'
-      ];
-
-      for (const table of businessTables) {
-        try {
-          const info = db.prepare(`DELETE FROM ${table}`).run();
-          diagnostics.purgedTables.push(table);
-          const rows = Number(info?.changes ?? 0);
-          diagnostics.rowsDeletedPerTable[table] = rows;
-          diagnostics.totalRowsDeleted += rows;
-        } catch (tblErr: any) {
-          diagnostics.skippedTables.push(table);
-          console.warn(`[DEVICE UNBIND WARN] Could not purge table ${table}:`, tblErr?.message || String(tblErr));
-        }
+    const reset = db.transaction(() => {
+      const current = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id IS NULL')
+        .get('device_bound_tenant_id') as any;
+      const currentBoundTenantId = current?.value ? String(current.value) : null;
+      if (currentBoundTenantId !== expectedBoundTenantId || (currentBoundTenantId && currentBoundTenantId !== tenantId)) {
+        throw new Error('Device binding changed during reset verification. Refresh status and retry.');
       }
 
-      try {
-        const settingsInfo = db.prepare('DELETE FROM settings').run();
-        diagnostics.purgedTables.push('settings');
-        const rows = Number(settingsInfo?.changes ?? 0);
-        diagnostics.rowsDeletedPerTable['settings'] = rows;
-        diagnostics.totalRowsDeleted += rows;
-      } catch (sErr: any) {
-        diagnostics.skippedTables.push('settings');
-        console.warn('[DEVICE UNBIND WARN] Could not purge settings table:', sErr?.message || String(sErr));
+      if (!currentBoundTenantId) {
+        const owner = db.prepare(`
+          SELECT id FROM users
+          WHERE id = ? AND tenant_id = ? AND LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser')
+        `).get(ownerUserId, tenantId);
+        if (!owner) throw new Error('The verified owner account is no longer present on this device');
       }
 
-      try {
-        const usersInfo = db.prepare('DELETE FROM users').run();
-        diagnostics.purgedTables.push('users');
-        const rows = Number(usersInfo?.changes ?? 0);
-        diagnostics.rowsDeletedPerTable['users'] = rows;
-        diagnostics.totalRowsDeleted += rows;
-      } catch (uErr: any) {
-        diagnostics.skippedTables.push('users');
-        console.warn('[DEVICE UNBIND WARN] Could not purge users table:', uErr?.message || String(uErr));
+      db.prepare('DELETE FROM sessions WHERE tenant_id = ?').run(tenantId);
+      db.prepare(`
+        DELETE FROM users
+        WHERE tenant_id = ?
+          AND LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser')
+      `).run(tenantId);
+      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_bound_tenant_id');
+      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_setup_reset_ready');
+      db.prepare('INSERT INTO settings (key, value, tenant_id) VALUES (?, ?, NULL)')
+        .run('device_setup_reset_ready', tenantId);
+
+      return { tenantId, accountId: ownerUserId };
+    });
+
+    return reset();
+  },
+
+  commitAdminRegistration: (userData: any, session: {
+    id: string;
+    user_id: string;
+    token: string;
+    tenant_id: string;
+    device_info: string;
+    ip_address: string;
+    created_at: string;
+    last_active_at: string;
+  }) => {
+    const tenantId = String(userData.tenant_id || userData.tenantId || '');
+    if (!tenantId) throw new Error('A tenant ID is required to create an admin account');
+
+    const commit = db.transaction(() => {
+      const hasAdmin = Boolean(db.prepare(
+        "SELECT 1 FROM users WHERE LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser') LIMIT 1"
+      ).get());
+      const bound = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id IS NULL')
+        .get('device_bound_tenant_id') as any;
+      if ((hasAdmin || bound?.value) && !dbService.isDeviceSetupResetReady()) {
+        throw new Error('An admin account already exists on this device. Verify its owner credentials and reset first.');
       }
 
-      try {
-        const sessionsInfo = db.prepare('DELETE FROM sessions').run();
-        diagnostics.purgedTables.push('sessions');
-        const rows = Number(sessionsInfo?.changes ?? 0);
-        diagnostics.rowsDeletedPerTable['sessions'] = rows;
-        diagnostics.totalRowsDeleted += rows;
-      } catch (sessErr: any) {
-        diagnostics.skippedTables.push('sessions');
-        console.warn('[DEVICE UNBIND WARN] Could not purge sessions table:', sessErr?.message || String(sessErr));
-      }
-
-      console.log(
-        `[DEVICE UNBIND SUCCESS - FULL WIPE] purgedTables=[${diagnostics.purgedTables.join(', ')}] ` +
-        `skippedTables=[${diagnostics.skippedTables.join(', ')}] ` +
-        `totalRowsDeleted=${diagnostics.totalRowsDeleted} ` +
-        `tenantScopeId=${diagnostics.tenantScopeId}`
+      db.prepare(`
+        INSERT INTO users (id, tenant_id, username, password, role, businessName, ownerName, mobile, email, profileImage, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        userData.id,
+        tenantId,
+        userData.username,
+        userData.password,
+        userData.role || 'admin',
+        userData.businessName || null,
+        userData.ownerName || null,
+        userData.mobile || null,
+        userData.email || null,
+        userData.profileImage || null,
+        userData.createdAt || new Date().toISOString()
       );
+      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_setup_reset_ready');
+      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_bound_tenant_id');
+      db.prepare('INSERT INTO settings (key, value, tenant_id) VALUES (?, ?, NULL)')
+        .run('device_bound_tenant_id', tenantId);
+      db.prepare(`
+        INSERT INTO sessions (id, user_id, tenant_id, token, device_info, ip_address, created_at, last_active_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        session.id,
+        session.user_id,
+        session.tenant_id,
+        session.token,
+        session.device_info,
+        session.ip_address,
+        session.created_at,
+        session.last_active_at
+      );
+    });
 
-      return diagnostics;
-    } catch (e: any) {
-      console.error('Failed to clear bound tenant ID (full wipe):', e);
-      throw e;
-    }
+    commit();
   },
+
+  getLocalAdminAccounts: () => db.prepare(`
+    SELECT id, tenant_id, username, mobile, email, password, role
+    FROM users
+    WHERE LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser')
+  `).all(),
+
+  getLocalAdminByCredential: (tenantId: string, identifier: string) => db.prepare(`
+    SELECT id, tenant_id, username, mobile, email, password, role
+    FROM users
+    WHERE tenant_id = ?
+      AND LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser')
+      AND (
+        LOWER(TRIM(COALESCE(username, ''))) = LOWER(TRIM(?))
+        OR LOWER(TRIM(COALESCE(email, ''))) = LOWER(TRIM(?))
+        OR REPLACE(REPLACE(REPLACE(REPLACE(TRIM(COALESCE(mobile, '')), ' ', ''), '-', ''), '(', ''), ')', '') =
+           REPLACE(REPLACE(REPLACE(REPLACE(TRIM(?), ' ', ''), '-', ''), '(', ''), ')', '')
+      )
+    LIMIT 2
+  `).all(tenantId, identifier, identifier, identifier),
 
   verifyAdminLocalAndCloud: async (username: string, localAdmin: any): Promise<{ matched: boolean; cloudAdmin?: any }> => {
     if (!useCloud()) {
@@ -4732,13 +4743,14 @@ export const dbService = {
   },
 
   setBoundTenantId: (tenantId: string) => {
-    try {
-      const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
-      stmt.run('device_bound_tenant_id', tenantId);
-      console.log(`[DEVICE LOCK] System bound to tenant_id: ${tenantId}`);
-    } catch (e) {
-      console.error('Failed to set bound tenant ID:', e);
-    }
+    const bind = db.transaction(() => {
+      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_setup_reset_ready');
+      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_bound_tenant_id');
+      db.prepare('INSERT INTO settings (key, value, tenant_id) VALUES (?, ?, NULL)')
+        .run('device_bound_tenant_id', tenantId);
+    });
+    bind();
+    console.log(`[DEVICE LOCK] System bound to tenant_id: ${tenantId}`);
   }
 };
 

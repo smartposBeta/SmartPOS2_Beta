@@ -540,7 +540,105 @@ export const RemittanceService = {
 
 // Auth service
 export class AuthService {
-  static async purgeLocalState(opts?: { skipApiCall?: boolean }): Promise<{ purged: boolean }> {
+  static async hasLocalAdminAccount(): Promise<boolean> {
+    const accounts = await db.users.toCollection().filter(user =>
+      ['admin', 'owner', 'superuser'].includes(String(user.role || '').toLowerCase())
+    ).count();
+    return accounts > 0;
+  }
+
+  static async verifyLocalAdminCredentials(identifier: string, password: string): Promise<{ tenantId: string; accountId: string } | null> {
+    const cleanIdentifier = String(identifier || '').trim();
+    if (!cleanIdentifier || !password) return null;
+    const normalized = cleanIdentifier.toLowerCase();
+    const digits = cleanIdentifier.replace(/\D/g, '');
+    const accounts = await db.users.toCollection().filter(user =>
+      ['admin', 'owner', 'superuser'].includes(String(user.role || '').toLowerCase())
+      && (
+        String(user.username || '').trim().toLowerCase() === normalized
+        || String(user.email || '').trim().toLowerCase() === normalized
+        || (!!digits && String(user.mobile || '').replace(/\D/g, '') === digits)
+      )
+    ).toArray();
+    if (accounts.length !== 1 || !await verifyPassword(password, String(accounts[0].password || ''))) {
+      return null;
+    }
+    const tenantId = String((accounts[0] as any).tenantId || (accounts[0] as any).tenant_id || '');
+    if (!tenantId) return null;
+    return { tenantId, accountId: String(accounts[0].id) };
+  }
+
+  static async purgeDeviceTenantState(tenantId: string, accountId?: string): Promise<void> {
+    if (!tenantId) throw new Error('The verified device account scope is missing. Local data was not purged.');
+
+    const localStorageKeys = [
+      'smartpos_user',
+      'smartpos_token',
+      'smartpos_tenant_id',
+      'smartpos_tenant',
+      'smartpos_guest_mode',
+      'smartpos_guest_user_id',
+      'smartpos_guest_expiry',
+      'admin_username',
+      'admin_password',
+      'admin_remember_me'
+    ];
+    if (typeof localStorage !== 'undefined') {
+      for (const key of localStorageKeys) {
+        localStorage.removeItem(key);
+        if (localStorage.getItem(key) !== null) {
+          throw new Error('Browser authentication state could not be cleared. Retry local cleanup before creating an account.');
+        }
+      }
+    }
+
+    if (typeof sessionStorage !== 'undefined') {
+      for (const key of localStorageKeys) sessionStorage.removeItem(key);
+    }
+
+    await db.open();
+    const saleIds = new Set(
+      (await db.sales.toArray())
+        .filter(sale => sale.tenantId === tenantId || (sale as any).tenant_id === tenantId)
+        .map(sale => sale.id)
+    );
+    const tables = db.tables;
+    const tableNames = tables.map(table => table.name);
+    await db.transaction('rw', tableNames as any, async () => {
+      for (const table of tables) {
+        const primaryKey = table.schema.primKey.keyPath;
+        if (typeof primaryKey !== 'string') continue;
+        const rows = await table.toArray();
+        const ids = rows.filter((row: any) =>
+          row.tenantId === tenantId
+          || row.tenant_id === tenantId
+          || (table.name === 'users' && accountId && String(row.id) === accountId)
+          || (table.name === 'saleItems' && saleIds.has(String(row.saleId)))
+        ).map((row: any) => row[primaryKey]);
+        if (ids.length) await table.bulkDelete(ids);
+      }
+    });
+
+    const retainedAccount = accountId
+      ? await db.users.get(accountId)
+      : undefined;
+    if (retainedAccount) {
+      throw new Error('The local owner account could not be removed. Retry local cleanup before creating an account.');
+    }
+    for (const table of tables) {
+      const remaining = await table.toArray();
+      if (remaining.some((row: any) =>
+        row.tenantId === tenantId
+        || row.tenant_id === tenantId
+        || (table.name === 'users' && accountId && String(row.id) === accountId)
+        || (table.name === 'saleItems' && saleIds.has(String(row.saleId)))
+      )) {
+        throw new Error('Some matching browser cache remains. Retry local cleanup before creating an account.');
+      }
+    }
+  }
+
+  static async purgeLocalState(): Promise<{ purged: boolean }> {
     if (typeof localStorage !== 'undefined') {
       try {
         Object.keys(localStorage).forEach((k: string) => localStorage.removeItem(k));
@@ -635,14 +733,6 @@ export class AuthService {
       } catch (_cacheErr) { /* ignore */ }
     }
 
-    if (!opts?.skipApiCall) {
-      try {
-        await api.post('/api/tenants/unbind-device', {});
-      } catch (apiErr) {
-        console.warn('[purgeLocalState] Server unbind API call failed; client state already clean:', apiErr);
-      }
-    }
-
     return { purged: true };
   }
 
@@ -652,35 +742,23 @@ export class AuthService {
     mobile: string;
     password: string;
   }): Promise<{ user: User, token?: string }> {
-    if (typeof localStorage !== 'undefined' && !localStorage.getItem('smartpos_token')) {
-      try {
-        const localAdminCount = await db.users.where('role').equals('admin').count();
-        if (localAdminCount > 0) {
-          console.log('[AuthService.createAdmin] Pre-purging stale Dexie admins (post-unbind state detected).');
-          await AuthService.purgeLocalState({ skipApiCall: true });
-        }
-      } catch (purgeErr) {
-        console.warn('[AuthService.createAdmin] Pre-purge guard error, continuing:', purgeErr);
-      }
-    }
-
-    // Check if mobile number is already used
-    const existingUser = await db.users.where('mobile').equals(userData.mobile).first();
-    if (existingUser) {
-      throw new Error('Mobile number already registered');
-    }
-
-    // Check if username (mobile) is already used
-    const existingUsername = await db.users.where('username').equals(userData.mobile).first();
-    if (existingUsername) {
-      throw new Error('Username already registered');
-    }
-
     const hashedPassword = await hashPassword(userData.password);
-    
+    const response = await api.post('/api/auth/register-admin', {
+      username: userData.mobile,
+      mobile: userData.mobile,
+      businessName: userData.businessName,
+      ownerName: userData.ownerName,
+      password: userData.password
+    });
+    const created = response?.user;
+    const tenantId = created?.tenant_id || created?.tenantId;
+    if (response?.success !== true || !created?.id || !tenantId || typeof response?.token !== 'string') {
+      throw new Error(response?.error || 'The server did not confirm account creation. You are not signed in.');
+    }
+
     const user: User = {
-      id: generateUUID(),
-      tenantId: (userData as any).tenantId || generateUUID(),
+      id: String(created.id),
+      tenantId: String(tenantId),
       username: userData.mobile,
       email: null,
       mobile: userData.mobile,
@@ -702,21 +780,13 @@ export class AuthService {
       createdAt: new Date(),
     };
 
-    await db.users.add(user);
-
-    // CRITICAL: Push admin to server to lock the system
-    let token: string | undefined;
     try {
-      const response = await api.post('/api/auth/register-admin', user);
-      console.log('Admin account registered on server');
-      token = response.token;
-    } catch (err) {
-      console.error('Failed to register admin on server:', err);
-      // Even if server registration fails, we have it locally,
-      // but the server will remain open for others until this succeeds.
+      await db.users.put(user);
+    } catch (cacheError) {
+      console.warn('[AuthService.createAdmin] Server created the account; local cache could not be written:', cacheError);
     }
 
-    return { user, token };
+    return { user, token: response.token };
   }
 
   static async loginAdmin(username: string, password: string): Promise<{ user: User, token?: string, offlineMode?: boolean, staleData?: boolean } | null> {

@@ -15,7 +15,13 @@ interface AuthContextType {
   login: (user: User, token?: string, opts?: { staleData?: boolean }) => Promise<void>;
   loginStaff: (staffId: string, passkey: string) => Promise<void>;
   logout: () => void;
-  unbindDevice: (creds?: { adminUsername?: string; adminPassword?: string }) => Promise<{ success: boolean; error?: string }>;
+  unbindDevice: (creds: { adminUsername: string; adminPassword: string }) => Promise<{
+    success: boolean;
+    error?: string;
+    resetCommitted?: boolean;
+    tenantId?: string;
+    accountId?: string;
+  }>;
   isAuthenticated: boolean;
   isAdmin: boolean;
   isStaff: boolean;
@@ -332,41 +338,32 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     localStorage.removeItem('smartpos_guest_expiry');
   };
 
-  const unbindDevice = useCallback(async (creds?: { adminUsername?: string; adminPassword?: string }): Promise<{ success: boolean; error?: string }> => {
+  const unbindDevice = useCallback(async (creds: { adminUsername: string; adminPassword: string }): Promise<{
+    success: boolean;
+    error?: string;
+    resetCommitted?: boolean;
+    tenantId?: string;
+    accountId?: string;
+  }> => {
+    let resetCommitted = false;
+    let tenantId: string | undefined;
+    let accountId: string | undefined;
     try {
-      const body: any = {};
-      if (creds?.adminUsername) body.adminUsername = creds.adminUsername;
-      if (creds?.adminPassword) body.adminPassword = creds.adminPassword;
-      const resp = await api.post('/api/tenants/unbind-device', body);
-
-      const wipeEverything = resp?.clientPurge?.purgeAllLocalStorage === true;
-      if (typeof localStorage !== 'undefined') {
-        try {
-          if (wipeEverything) {
-            Object.keys(localStorage).forEach((k: string) => localStorage.removeItem(k));
-          } else {
-            const keys = resp?.clientPurge?.localStorageKeys;
-            if (Array.isArray(keys)) {
-              keys.forEach((k: string) => localStorage.removeItem(k));
-            } else {
-              Object.keys(localStorage).forEach((k: string) => localStorage.removeItem(k));
-            }
-          }
-        } catch (_e1) {
-          try { Object.keys(localStorage).forEach((k: string) => localStorage.removeItem(k)); } catch (_e2) { /* silent */ }
-        }
+      if (!creds?.adminUsername?.trim() || !creds?.adminPassword) {
+        return { success: false, error: 'Enter the current store owner username and password to reset this device.' };
       }
-
-      if (typeof sessionStorage !== 'undefined') {
-        try {
-          Object.keys(sessionStorage).forEach((k: string) => sessionStorage.removeItem(k));
-        } catch (_ssErr) { /* silent */ }
+      const resp = await api.post('/api/tenants/unbind-device', {
+        adminUsername: creds.adminUsername.trim(),
+        adminPassword: creds.adminPassword
+      });
+      if (resp?.success !== true) {
+        return { success: false, error: 'The server did not confirm the device reset.' };
       }
-
-      if (resp?.clientPurge?.purgeDexieTables !== false) {
-        await AuthService.purgeLocalState({ skipApiCall: true });
-      } else {
-        await AuthService.purgeLocalState({ skipApiCall: true });
+      resetCommitted = true;
+      tenantId = resp?.clientPurge?.tenantId;
+      accountId = resp?.clientPurge?.accountId;
+      if (!tenantId || !accountId) {
+        throw new Error('The server reset the binding but did not provide the verified local cleanup scope.');
       }
 
       if (socket) {
@@ -378,31 +375,34 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setIsGuest(false);
       setOfflineMode(false);
 
+      await AuthService.purgeDeviceTenantState(tenantId, accountId);
+
       if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('device-unbound', { detail: { timestamp: Date.now() } }));
+        window.dispatchEvent(new CustomEvent('device-unbound', { detail: { timestamp: Date.now(), tenantId } }));
       }
 
-      return { success: true };
+      return { success: true, resetCommitted: true, tenantId, accountId };
     } catch (e: any) {
-      console.error('[UNBIND DEVICE] Error:', e);
-
-      try {
-        if (typeof localStorage !== 'undefined') {
-          Object.keys(localStorage).forEach((k: string) => localStorage.removeItem(k));
+      if (resetCommitted) {
+        if (socket) {
+          try { socket.disconnect(); } catch (_socketErr) { /* ignore */ }
         }
-        if (typeof sessionStorage !== 'undefined') {
-          Object.keys(sessionStorage).forEach((k: string) => sessionStorage.removeItem(k));
-        }
-        await AuthService.purgeLocalState({ skipApiCall: true });
-      } catch (_fallbackErr) { /* silent catchall */ }
-
-      setUser(null);
-      setToken(null);
-      setIsGuest(false);
-      setOfflineMode(false);
-
-      const msg = e?.message || e?.error || (e && String(e)) || 'Unknown unbind error';
-      return { success: true, error: msg };
+        setUser(null);
+        setToken(null);
+        setIsGuest(false);
+        setOfflineMode(false);
+        return {
+          success: false,
+          resetCommitted: true,
+          tenantId,
+          accountId,
+          error: e?.message || 'The server reset the binding, but local cleanup failed. Retry cleanup before creating an account.'
+        };
+      }
+      return {
+        success: false,
+        error: e?.message || 'Device reset failed. No local data was cleared.'
+      };
     }
   }, [socket]);
 

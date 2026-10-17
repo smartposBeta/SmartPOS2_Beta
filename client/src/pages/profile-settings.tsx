@@ -186,8 +186,6 @@ const ProfileSettings: React.FC = () => {
   const [statusLoading, setStatusLoading] = useState(true);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [showDeviceBindingDialog, setShowDeviceBindingDialog] = useState(false);
-  const [showUnbindConfirm, setShowUnbindConfirm] = useState(false);
-  const [unbindLoading, setUnbindLoading] = useState(false);
 
   useEffect(() => {
     const checkWalletStatus = async () => {
@@ -484,46 +482,6 @@ const ProfileSettings: React.FC = () => {
     }
   }, []);
 
-  const handleConfirmUnbind = async () => {
-    setUnbindLoading(true);
-    try {
-      const res = await fetch('/api/tenants/unbind-device', { method: 'POST' });
-      const d = await res.json();
-      if (res.ok || d?.success) {
-        if (d?.clientPurge?.purgeAllLocalStorage && typeof localStorage !== 'undefined') {
-          Object.keys(localStorage).forEach(k => localStorage.removeItem(k));
-        } else if (Array.isArray(d?.clientPurge?.localStorageKeys) && typeof localStorage !== 'undefined') {
-          d.clientPurge.localStorageKeys.forEach((k: string) => localStorage.removeItem(k));
-        }
-        await AuthService.purgeLocalState({ skipApiCall: true });
-        toast({
-          title: 'Device Factory Reset Complete',
-          description: 'All store data has been erased. Device is ready for a new account.',
-          variant: 'default'
-        });
-        setDeviceStatus({ bound: false, tenant: null, admin: null });
-        setShowUnbindConfirm(false);
-        setShowDeviceBindingDialog(false);
-        setTimeout(() => {
-          if (typeof window !== 'undefined') window.location.href = '/register-tenant';
-        }, 900);
-      } else {
-        toast({ title: 'Unbind Failed', description: d?.error || 'Server rejected the unbind request.', variant: 'destructive' });
-      }
-    } catch (e: any) {
-      try {
-        if (typeof localStorage !== 'undefined') Object.keys(localStorage).forEach(k => localStorage.removeItem(k));
-        if (typeof sessionStorage !== 'undefined') Object.keys(sessionStorage).forEach(k => sessionStorage.removeItem(k));
-        await AuthService.purgeLocalState({ skipApiCall: true });
-      } catch (_f) { /* ignore */ }
-      toast({ title: 'Local Reset Complete', description: 'Local data wiped. Reloading…' });
-      setShowUnbindConfirm(false);
-      setTimeout(() => { if (typeof window !== 'undefined') window.location.href = '/register-tenant'; }, 700);
-    } finally {
-      setUnbindLoading(false);
-    }
-  };
-
   useEffect(() => {
     const loadStats = async () => {
       try {
@@ -803,8 +761,12 @@ const ProfileSettings: React.FC = () => {
                   </div>
                   <CardContent className="p-5 space-y-3">
                     <p className="text-xs font-semibold leading-relaxed text-amber-900">
-                      No explicit device binding is recorded. Local account data is present, but its identity is not shown as the bound store. Sign in to restore and verify the binding before registering another account.
+                      No explicit binding is recorded. Local account data is not a verified store identity. Continue to secure setup to authenticate as its owner before clearing this device state.
                     </p>
+                    <Button variant="destructive" onClick={() => setLocation('/admin-signup')} className="w-full rounded-xl">
+                      <Unlock className="w-4 h-4 mr-2" />
+                      Verify owner & reset device
+                    </Button>
                     <Button variant="outline" onClick={checkDeviceStatus} className="w-full rounded-xl">
                       <RefreshCw className="w-3.5 h-3.5 mr-2" />
                       Refresh status
@@ -903,11 +865,11 @@ const ProfileSettings: React.FC = () => {
                       </Button>
                       <Button
                         variant="destructive"
-                        onClick={() => setShowUnbindConfirm(true)}
+                        onClick={() => setLocation('/admin-signup')}
                         className="w-full rounded-2xl h-12 font-black text-xs shadow-lg bg-rose-600 hover:bg-rose-700 border-0"
                       >
                         <Unlock className="w-4 h-4 mr-2" />
-                        Unbind & Factory Reset Device
+                        Verify owner & reset device
                       </Button>
                     </div>
                   </CardContent>
@@ -953,63 +915,6 @@ const ProfileSettings: React.FC = () => {
             </div>
           </DialogContent>
         </Dialog>
-
-        {/* Unbind Confirmation AlertDialog */}
-        <AlertDialog open={showUnbindConfirm} onOpenChange={(next) => { if (!unbindLoading) setShowUnbindConfirm(next); }}>
-          <AlertDialogContent className="rounded-[2rem] max-w-md border-0 shadow-2xl bg-white">
-            <AlertDialogHeader className="text-center pb-2">
-              <div className="w-16 h-16 bg-rose-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                <AlertCircle className="w-8 h-8 text-rose-500" />
-              </div>
-              <AlertDialogTitle className="text-xl font-black tracking-tight text-gray-900">
-                Factory Reset This Device?
-              </AlertDialogTitle>
-              <AlertDialogDescription className="text-sm font-medium text-gray-500 leading-relaxed pt-1">
-                This will completely erase the registered store and <span className="font-black">ALL data</span> from this device.
-                The device will be blank and ready for a new store account.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-
-            <div className="px-1 py-3 space-y-2">
-              {[
-                'Delete all products, inventory & variants',
-                'Clear entire sales history & receipts',
-                'Remove staff accounts & remittances',
-                'Wipe customers, credits, payments',
-                'Erase all settings & device preferences',
-                'Delete admin account & sessions'
-              ].map((item) => (
-                <div key={item} className="flex items-center gap-2.5 text-xs text-gray-600 font-medium bg-rose-50 px-3 py-2 rounded-xl border border-rose-100">
-                  <X className="w-3.5 h-3.5 text-rose-500 flex-shrink-0" />
-                  <span>{item}</span>
-                </div>
-              ))}
-            </div>
-
-            <AlertDialogFooter className="flex-col sm:flex-col gap-2 pt-2">
-              <AlertDialogCancel disabled={unbindLoading} className="w-full rounded-xl h-12 font-bold text-sm border-gray-200">
-                Cancel — Keep Data
-              </AlertDialogCancel>
-              <AlertDialogAction
-                onClick={(e) => { e.preventDefault(); handleConfirmUnbind(); }}
-                disabled={unbindLoading}
-                className="w-full rounded-xl h-12 font-black text-sm bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-200"
-              >
-                {unbindLoading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Erasing Everything…
-                  </>
-                ) : (
-                  <>
-                    <Unlock className="w-4 h-4 mr-2" />
-                    Yes — Reset & Unbind Device
-                  </>
-                )}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
 
         {/* Other Dialogs */}
         <Dialog open={showHelpSupportDialog} onOpenChange={setShowHelpSupportDialog}>

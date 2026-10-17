@@ -39,7 +39,6 @@ const getHeaders = () => {
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
-    console.log('API: Adding Authorization header with token:', token);
   } else {
     console.log('API: No token found in localStorage, Authorization header not added.');
   }
@@ -73,12 +72,14 @@ const api = {
       });
       if (!response.ok) {
         const errorText = await response.text();
+        let message = `API POST Error (${response.status})`;
         try {
           const errorJson = JSON.parse(errorText);
-          throw new Error(errorJson.error || `API POST Error (${response.status})`);
-        } catch (e) {
-          throw new Error(`API POST Error (${response.status}): ${errorText || response.statusText}`);
+          message = errorJson.error || message;
+        } catch {
+          message = `${message}: ${errorText || response.statusText}`;
         }
+        throw new Error(message);
       }
       return response.json();
     } catch (error) {
