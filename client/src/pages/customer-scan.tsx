@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'wouter';
 import Scanner from '@/components/Scanner';
+import ProductImage from '@/components/ProductImage';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -377,15 +378,14 @@ const CustomerScan: React.FC = () => {
 
           {product && (
             <div className="space-y-6 my-2">
-              {product.imageUrl ? (
-                <div className="w-full h-44 bg-slate-950 rounded-2xl flex items-center justify-center p-4 border border-slate-800">
-                  <img src={product.imageUrl} alt={product.name} className="max-h-full object-contain" />
-                </div>
-              ) : (
-                <div className="w-full h-36 bg-slate-950 rounded-2xl flex items-center justify-center border border-slate-800">
-                  <Package className="w-12 h-12 text-slate-700" />
-                </div>
-              )}
+              <ProductImage
+                src={product.imageUrl}
+                alt={product.name}
+                className="w-full h-44 rounded-2xl border border-slate-800 bg-slate-950"
+                imageClassName="max-h-full object-contain p-4"
+                fallbackClassName="bg-slate-950 text-slate-500"
+                iconClassName="w-12 h-12 text-slate-600"
+              />
 
               {/* Big Price Display */}
               <div className="p-6 bg-gradient-to-br from-slate-950 to-slate-900 rounded-3xl border border-slate-800 flex justify-between items-center shadow-inner">

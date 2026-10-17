@@ -3,6 +3,7 @@ import { BarcodeScanner } from '@/lib/scanner';
 import { Camera, CameraOff, RefreshCw, Upload, Scan, Keyboard } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useDevices } from '@/contexts/DeviceContext';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 interface ScannerProps {
   onResult: (barcode: string) => void;
@@ -54,6 +55,7 @@ const Scanner: React.FC<ScannerProps> = ({ onResult, onError, initialMirrorMode 
 
   if (deviceMode === 'pc') {
     return (
+      <LocalizedContent>
       <div className="bg-gray-50 border-2 border-dashed border-gray-200 rounded-2xl p-8 flex flex-col items-center justify-center text-center space-y-4">
         <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center">
           <Keyboard className="w-8 h-8 text-[#BF953F]" />
@@ -65,6 +67,7 @@ const Scanner: React.FC<ScannerProps> = ({ onResult, onError, initialMirrorMode 
           </p>
         </div>
       </div>
+      </LocalizedContent>
     );
   }
 
@@ -203,6 +206,7 @@ const Scanner: React.FC<ScannerProps> = ({ onResult, onError, initialMirrorMode 
   };
 
   return (
+    <LocalizedContent>
     <div className="relative">
       <input 
         type="file" 
@@ -314,6 +318,7 @@ const Scanner: React.FC<ScannerProps> = ({ onResult, onError, initialMirrorMode 
         Tip: Center the barcode in the box and hold steady. Use "Scan Now" if auto-scan is slow.
       </p>
     </div>
+    </LocalizedContent>
   );
 };
 

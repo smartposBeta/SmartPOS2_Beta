@@ -30,6 +30,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import type { BulkLineInput, Product, Variant } from '@shared/schema';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 interface BulkInventoryWorkspaceProps {
   isOpen: boolean;
@@ -601,6 +602,7 @@ export const BulkInventoryWorkspace: React.FC<BulkInventoryWorkspaceProps> = ({
   if (!isOpen) return null;
 
   return (
+    <LocalizedContent>
     <Dialog open={isOpen} onOpenChange={(open) => {
       if (!open) {
         if (items.length > 0) setShowCancelConfirm(true);
@@ -698,7 +700,7 @@ export const BulkInventoryWorkspace: React.FC<BulkInventoryWorkspaceProps> = ({
               </div>
               <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">No items scanned yet</h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mt-1">
-                Scan outer master box barcodes from your delivery. The system will auto-breakdown boxes into piece quantities and stock them into your retail inventory!
+                Scan a delivery box barcode to enter its pack size and box count, or scan an individual piece barcode. Added stock is always summarized in retail pieces.
               </p>
             </div>
           ) : (
@@ -773,6 +775,7 @@ export const BulkInventoryWorkspace: React.FC<BulkInventoryWorkspaceProps> = ({
                           <button
                             type="button"
                             onClick={() => handleAdjustBoxOrQty(idx, -1)}
+                            aria-label={`Decrease ${item.isIntakeByBox ? 'box' : 'piece'} quantity for ${item.productName}`}
                             className="w-6 h-6 rounded flex items-center justify-center text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
                           >
                             <Minus className="w-3 h-3" />
@@ -783,6 +786,7 @@ export const BulkInventoryWorkspace: React.FC<BulkInventoryWorkspaceProps> = ({
                           <button
                             type="button"
                             onClick={() => handleAdjustBoxOrQty(idx, 1)}
+                            aria-label={`Increase ${item.isIntakeByBox ? 'box' : 'piece'} quantity for ${item.productName}`}
                             className="w-6 h-6 rounded flex items-center justify-center text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
                           >
                             <Plus className="w-3 h-3" />
@@ -798,19 +802,19 @@ export const BulkInventoryWorkspace: React.FC<BulkInventoryWorkspaceProps> = ({
 
                       {/* Cost */}
                       <div className="text-right">
-                        <span className="text-[10px] font-medium text-slate-400 block">Unit Cost</span>
+                        <span className="text-[10px] font-medium text-slate-400 block">Cost / Piece</span>
                         <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">₱{Number(item.cost).toFixed(2)}</span>
                       </div>
 
                       {/* Selling Price */}
                       <div className="text-right">
-                        <span className="text-[10px] font-medium text-slate-400 block">Retail Price</span>
+                        <span className="text-[10px] font-medium text-slate-400 block">Retail / Piece</span>
                         <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">₱{Number(item.sellingPrice).toFixed(2)}</span>
                       </div>
 
                       {/* Subtotal */}
                       <div className="text-right min-w-[64px]">
-                        <span className="text-[10px] font-medium text-slate-400 block">Subtotal</span>
+                        <span className="text-[10px] font-medium text-slate-400 block">Line Cost</span>
                         <span className="text-xs font-bold text-slate-900 dark:text-white">₱{lineTotalCost.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                       </div>
 
@@ -866,7 +870,7 @@ export const BulkInventoryWorkspace: React.FC<BulkInventoryWorkspaceProps> = ({
             </div>
             <div className="h-6 w-px bg-slate-200 dark:bg-slate-700" />
             <div>
-              <span className="text-[10px] font-medium text-slate-400 block">Batch Value</span>
+              <span className="text-[10px] font-medium text-slate-400 block">Estimated Batch Cost</span>
               <span className="text-sm font-bold text-slate-900 dark:text-white">₱{totalCost.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
             </div>
           </div>
@@ -1394,5 +1398,6 @@ export const BulkInventoryWorkspace: React.FC<BulkInventoryWorkspaceProps> = ({
         </AlertDialog>
       </DialogContent>
     </Dialog>
+    </LocalizedContent>
   );
 };

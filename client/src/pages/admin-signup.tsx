@@ -27,6 +27,8 @@ type SignupFormData = z.infer<typeof signupSchema>;
 
 type DeviceStatus = {
   bound: boolean;
+  identityVerified?: boolean;
+  localAccountPresent?: boolean;
   tenant?: {
     id: string;
     storeName?: string;
@@ -53,6 +55,7 @@ const AdminSignup: React.FC = () => {
   const [showUnbindConfirm, setShowUnbindConfirm] = useState(false);
   const [unbindLoading, setUnbindLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const { login, unbindDevice } = useAuth();
   const { toast } = useToast();
 
@@ -68,46 +71,31 @@ const AdminSignup: React.FC = () => {
 
   const checkDeviceStatus = useCallback(async () => {
     setStatusLoading(true);
+    setStatusError(null);
+    setDeviceStatus(null);
     try {
-      const data: DeviceStatus = await api.get('/api/tenants/device-status');
+      const response: DeviceStatus = await api.get('/api/tenants/device-status');
+      if (typeof response?.bound !== 'boolean' || typeof response?.identityVerified !== 'boolean') {
+        throw new Error('Device status response was incomplete or from an unsupported server version');
+      }
+      const identityVerified = response.identityVerified === true;
+      const data = {
+        ...response,
+        identityVerified,
+        localAccountPresent: response.localAccountPresent === true,
+        tenant: identityVerified ? response.tenant : null,
+        admin: identityVerified ? response.admin : null,
+      };
       setDeviceStatus(data);
-      if (data.bound) {
+      if (data.bound || data.localAccountPresent) {
         setIsLocked(true);
       } else {
         setIsLocked(false);
       }
     } catch (e) {
-      console.warn('Failed to check device binding status, falling back to auth/status');
-      try {
-        const fallback = await api.get('/api/auth/status');
-        if (fallback.configured || fallback.adminExists) {
-          setIsLocked(true);
-          setDeviceStatus({
-            bound: true,
-            tenant: fallback.tenant ? {
-              id: fallback.tenant.id,
-              storeName: fallback.tenant.store_name || fallback.tenant.storeName,
-              subdomain: fallback.tenant.subdomain,
-            } : null,
-            admin: fallback.admin ? {
-              id: fallback.admin.id,
-              username: fallback.admin.username,
-              ownerName: fallback.admin.ownerName || fallback.admin.owner_name,
-              businessName: fallback.admin.businessName || fallback.admin.business_name,
-              mobile: fallback.admin.mobile,
-              email: fallback.admin.email,
-              role: fallback.admin.role,
-            } : null,
-            message: 'Device is currently bound.'
-          });
-        } else {
-          setIsLocked(false);
-          setDeviceStatus({ bound: false, tenant: null, admin: null });
-        }
-      } catch (_e2) {
-        setIsLocked(false);
-        setDeviceStatus({ bound: false, tenant: null, admin: null });
-      }
+      console.warn('Failed to verify device binding status:', e);
+      setIsLocked(false);
+      setStatusError('Device binding could not be verified. Retry before creating an account.');
     } finally {
       setStatusLoading(false);
     }
@@ -157,6 +145,7 @@ const AdminSignup: React.FC = () => {
   });
 
   const onSubmit = async (data: SignupFormData) => {
+    if (statusLoading || statusError || isLocked) return;
     setIsLoading(true);
     try {
       const response = await AuthService.createAdmin(data);
@@ -189,13 +178,30 @@ const AdminSignup: React.FC = () => {
     );
   }
 
+  if (statusError) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+        <Card className="max-w-md w-full rounded-2xl border-amber-200 p-6 text-center space-y-4">
+          <AlertTriangle className="w-10 h-10 mx-auto text-amber-500" />
+          <h2 className="text-lg font-bold text-gray-900">Binding status unavailable</h2>
+          <p className="text-sm text-gray-600">{statusError}</p>
+          <Button onClick={checkDeviceStatus} className="w-full rounded-xl">Retry status check</Button>
+        </Card>
+      </div>
+    );
+  }
+
   if (isLocked) {
-    const storeName = deviceStatus?.tenant?.storeName || deviceStatus?.admin?.businessName || 'Registered Store';
-    const ownerName = deviceStatus?.admin?.ownerName || deviceStatus?.admin?.username || 'Store Admin';
-    const subdomain = deviceStatus?.tenant?.subdomain;
-    const adminMobile = deviceStatus?.admin?.mobile;
-    const adminEmail = deviceStatus?.admin?.email;
-    const adminUsername = deviceStatus?.admin?.username;
+    const identityVerified = deviceStatus?.identityVerified === true;
+    const hasConfirmedBinding = deviceStatus?.bound === true;
+    const storeName = identityVerified
+      ? deviceStatus?.tenant?.storeName || deviceStatus?.admin?.businessName || 'Store name unavailable'
+      : 'Account identity unavailable';
+    const ownerName = identityVerified ? deviceStatus?.admin?.ownerName || deviceStatus?.admin?.username : null;
+    const subdomain = identityVerified ? deviceStatus?.tenant?.subdomain : undefined;
+    const adminMobile = identityVerified ? deviceStatus?.admin?.mobile : undefined;
+    const adminEmail = identityVerified ? deviceStatus?.admin?.email : undefined;
+    const adminUsername = identityVerified ? deviceStatus?.admin?.username : undefined;
 
     return (
       <>
@@ -212,13 +218,17 @@ const AdminSignup: React.FC = () => {
               </div>
               <div className="flex items-center justify-center gap-2 mb-3">
                 <Badge variant="destructive" className="px-4 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] rounded-full bg-rose-500/90 border-0 shadow-lg shadow-rose-200">
-                  <AlertTriangle className="w-3 h-3 mr-1.5" /> Device Bound
+                  <AlertTriangle className="w-3 h-3 mr-1.5" /> {hasConfirmedBinding ? 'Device Bound' : 'Local Account Found'}
                 </Badge>
               </div>
-              <h2 className="text-3xl font-black text-gray-900 tracking-tight mb-2">Device Already Registered</h2>
+              <h2 className="text-3xl font-black text-gray-900 tracking-tight mb-2">
+                {hasConfirmedBinding ? 'Device Already Registered' : 'Account Setup Needs Attention'}
+              </h2>
               <p className="text-sm text-gray-500 font-medium max-w-sm mx-auto leading-relaxed">
-                This terminal is currently linked to an existing SmartPOS+ business account.
-                Details of the registered account are shown below.
+                This terminal is linked to an existing account.
+                {hasConfirmedBinding
+                  ? identityVerified ? ' Verified account details are shown below.' : ' The account identity could not be verified, so cached details are hidden.'
+                  : ' Local account data exists, but no explicit device binding can be verified. Sign in to restore the binding.'}
               </p>
             </div>
 
@@ -229,7 +239,9 @@ const AdminSignup: React.FC = () => {
                     <Building2 className="w-6 h-6" />
                   </div>
                   <div className="text-left flex-1">
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/80 mb-0.5">Registered Store</p>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/80 mb-0.5">
+                      {identityVerified ? 'Verified Store' : hasConfirmedBinding ? 'Device Binding' : 'Local Account Data'}
+                    </p>
                     <h3 className="text-xl font-black tracking-tight">{storeName}</h3>
                     {subdomain && (
                       <p className="text-xs font-semibold text-white/80 mt-0.5">
@@ -242,49 +254,61 @@ const AdminSignup: React.FC = () => {
               </div>
 
               <CardContent className="p-5 space-y-3 text-left">
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
-                    <div className="w-10 h-10 bg-blue-50 text-blue-500 rounded-xl flex items-center justify-center flex-shrink-0">
-                      <UserIcon className="w-5 h-5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Account Owner</p>
-                      <p className="text-sm font-bold text-gray-900 truncate">{ownerName}</p>
-                      {adminUsername && adminUsername !== ownerName && (
-                        <p className="text-[11px] font-medium text-gray-500">@{adminUsername}</p>
-                      )}
-                    </div>
-                    <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest border-amber-200 bg-amber-50 text-amber-700 rounded-full px-2.5 py-0.5">
-                      {deviceStatus?.admin?.role || 'ADMIN'}
-                    </Badge>
+                {identityVerified ? (
+                  <div className="space-y-3">
+                    {deviceStatus?.admin && (
+                      <>
+                        <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
+                          <div className="w-10 h-10 bg-blue-50 text-blue-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                            <UserIcon className="w-5 h-5" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Bound Account User</p>
+                            <p className="text-sm font-bold text-gray-900 truncate">{ownerName || 'Owner details unavailable'}</p>
+                            {adminUsername && adminUsername !== ownerName && (
+                              <p className="text-[11px] font-medium text-gray-500">@{adminUsername}</p>
+                            )}
+                          </div>
+                          <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest border-amber-200 bg-amber-50 text-amber-700 rounded-full px-2.5 py-0.5">
+                            {deviceStatus.admin.role || 'Admin'}
+                          </Badge>
+                        </div>
+
+                        {adminMobile && (
+                          <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
+                            <div className="w-10 h-10 bg-emerald-50 text-emerald-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                              <Smartphone className="w-5 h-5" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Contact Number</p>
+                              <p className="text-sm font-bold text-gray-900 truncate">{adminMobile}</p>
+                            </div>
+                          </div>
+                        )}
+
+                        {adminEmail && (
+                          <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
+                            <div className="w-10 h-10 bg-purple-50 text-purple-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                              <Mail className="w-5 h-5" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Email Address</p>
+                              <p className="text-sm font-bold text-gray-900 truncate">{adminEmail}</p>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
+                ) : (
+                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-[11px] font-semibold text-amber-800">
+                    {hasConfirmedBinding
+                      ? 'The device is bound, but its account details are not available for verification. Refresh status before relying on an account name or owner.'
+                      : 'Local account data exists without an explicit device binding. Sign in to restore the binding before setting up another account.'}
+                  </div>
+                )}
 
-                  {adminMobile && (
-                    <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
-                      <div className="w-10 h-10 bg-emerald-50 text-emerald-500 rounded-xl flex items-center justify-center flex-shrink-0">
-                        <Smartphone className="w-5 h-5" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Contact Number</p>
-                        <p className="text-sm font-bold text-gray-900 truncate">{adminMobile}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {adminEmail && (
-                    <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
-                      <div className="w-10 h-10 bg-purple-50 text-purple-500 rounded-xl flex items-center justify-center flex-shrink-0">
-                        <Mail className="w-5 h-5" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Email Address</p>
-                        <p className="text-sm font-bold text-gray-900 truncate">{adminEmail}</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl">
+                {hasConfirmedBinding && <div className="mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl">
                   <div className="flex items-start gap-2.5">
                     <AlertTriangle className="w-4.5 h-4.5 text-amber-600 flex-shrink-0 mt-0.5" />
                     <p className="text-[11px] font-semibold text-amber-800 leading-relaxed">
@@ -292,7 +316,7 @@ const AdminSignup: React.FC = () => {
                       products, sales, staff records, and settings. The device will be completely blank and ready for a new account.
                     </p>
                   </div>
-                </div>
+                </div>}
               </CardContent>
             </Card>
 
@@ -302,17 +326,29 @@ const AdminSignup: React.FC = () => {
                 className="w-full bg-gradient-to-r from-[#FF8882] to-[#FF9B95] hover:from-[#E87872] hover:to-[#E88A84] text-white rounded-2xl py-5 font-black text-sm shadow-xl shadow-rose-200/70 transition-all active:scale-[0.98]"
               >
                 <Store className="w-4.5 h-4.5 mr-2" />
-                Sign In to This Store
+                {identityVerified ? 'Sign In to This Store' : 'Sign In'}
               </Button>
 
-              <Button
-                onClick={() => setShowUnbindConfirm(true)}
-                variant="destructive"
-                className="w-full rounded-2xl py-5 font-black text-sm shadow-lg shadow-red-100 transition-all active:scale-[0.98] bg-white text-red-600 border-2 border-red-200 hover:bg-red-50 hover:text-red-700 hover:border-red-300"
-              >
-                <Unlock className="w-4.5 h-4.5 mr-2" />
-                Unbind & Factory Reset Device
-              </Button>
+              {!identityVerified && hasConfirmedBinding && (
+                <Button
+                  variant="outline"
+                  onClick={checkDeviceStatus}
+                  className="w-full rounded-2xl py-5 font-bold text-sm"
+                >
+                  Refresh Binding Status
+                </Button>
+              )}
+
+              {hasConfirmedBinding && (
+                <Button
+                  onClick={() => setShowUnbindConfirm(true)}
+                  variant="destructive"
+                  className="w-full rounded-2xl py-5 font-black text-sm shadow-lg shadow-red-100 transition-all active:scale-[0.98] bg-white text-red-600 border-2 border-red-200 hover:bg-red-50 hover:text-red-700 hover:border-red-300"
+                >
+                  <Unlock className="w-4.5 h-4.5 mr-2" />
+                  Unbind & Factory Reset Device
+                </Button>
+              )}
             </div>
           </motion.div>
         </div>

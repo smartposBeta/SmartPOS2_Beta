@@ -171,6 +171,8 @@ export class SmartPOSDB extends Dexie {
 export const db = new SmartPOSDB();
 
 // Notification Service
+let lowStockCheckRunning = false;
+
 export const NotificationService = {
   async list(): Promise<Notification[]> {
     try {
@@ -216,76 +218,137 @@ export const NotificationService = {
     await db.notifications.put(notification);
   },
   async checkAndGenerateLowStockAlerts(tenantId?: string): Promise<Notification[]> {
+    if (lowStockCheckRunning) return [];
+    lowStockCheckRunning = true;
     try {
       const effectiveTenant = tenantId || localStorage.getItem('smartpos_tenant_id') || '';
-      const [allProducts, allVariants, existingNotifs] = await Promise.all([
+      const [allProducts, allVariants, localNotifications, remoteNotifications] = await Promise.all([
         db.products.toArray(),
         db.variants.toArray(),
-        db.notifications.toArray()
+        db.notifications.toArray(),
+        this.list()
       ]);
 
-      const now = Date.now();
-      const twelveHoursAgo = now - 12 * 60 * 60 * 1000;
+      const existingNotifs = Array.from(new Map(
+        [...localNotifications, ...remoteNotifications].map(notification => [notification.id, notification])
+      ).values());
       const createdAlerts: Notification[] = [];
+      const productNames = new Map(allProducts.map(product => [product.id, product.name]));
+      const stockByKey = new Map<string, { productId: string; variantId?: string; productName: string; quantity: number }>();
+
+      for (const product of allProducts) {
+        if (effectiveTenant && product.tenantId && product.tenantId !== effectiveTenant) continue;
+        stockByKey.set(`product:${product.id}`, {
+          productId: product.id,
+          productName: product.name,
+          quantity: Number(product.quantity ?? 0)
+        });
+      }
+      for (const variant of allVariants) {
+        if (effectiveTenant && variant.tenantId && variant.tenantId !== effectiveTenant) continue;
+        stockByKey.set(`variant:${variant.id}`, {
+          productId: variant.productId,
+          variantId: variant.id,
+          productName: `${productNames.get(variant.productId) || 'Product'} (${variant.name})`,
+          quantity: Number(variant.quantity ?? 0)
+        });
+      }
+
+      const activeAlertKeys = new Set<string>();
+      for (const notification of existingNotifs) {
+        if (notification.type !== 'inventory_alert') continue;
+        if (effectiveTenant && notification.tenantId && notification.tenantId !== effectiveTenant) continue;
+        try {
+          const data = typeof notification.data === 'string' ? JSON.parse(notification.data) : notification.data;
+          let key = data?.variantId
+            ? `variant:${data.variantId}`
+            : data?.productId
+              ? `product:${data.productId}`
+              : null;
+          if (data?.type !== 'low_stock' && !data?.productId && !data?.variantId) continue;
+          if (!key && data?.productName) {
+            key = Array.from(stockByKey.entries()).find(([, stock]) =>
+              stock.productName === data.productName || notification.message.includes(`"${stock.productName}"`)
+            )?.[0] || null;
+          }
+          if (!key) continue;
+          const currentStock = stockByKey.get(key);
+          if (!currentStock || currentStock.quantity > 20 || activeAlertKeys.has(key)) {
+            await this.delete(notification.id);
+            continue;
+          }
+
+          activeAlertKeys.add(key);
+          if (data.quantity !== currentStock.quantity || data.productName !== currentStock.productName) {
+            const isOutOfStock = currentStock.quantity <= 0;
+            const updated = {
+              ...notification,
+              message: `${isOutOfStock ? 'Out of stock' : 'Low stock'}: ${currentStock.productName} (${currentStock.quantity} pieces remaining)`,
+              data: JSON.stringify({
+                ...data,
+                productId: currentStock.productId,
+                variantId: currentStock.variantId,
+                productName: currentStock.productName,
+                quantity: currentStock.quantity,
+                isOutOfStock,
+                type: 'low_stock'
+              }),
+              isRead: false
+            };
+            await db.notifications.put(updated);
+            Object.assign(notification, updated);
+            try {
+              await api.patch(`/api/notifications/${notification.id}`, updated);
+            } catch {}
+          }
+        } catch {}
+      }
 
       // Check standard products
       for (const prod of allProducts) {
+        if (effectiveTenant && prod.tenantId && prod.tenantId !== effectiveTenant) continue;
         const qty = Number(prod.quantity ?? 0);
-        if (qty <= 5) {
+        if (qty <= 20) {
+          if (activeAlertKeys.has(`product:${prod.id}`)) continue;
           const isOutOfStock = qty <= 0;
           const msg = isOutOfStock
             ? `🚨 Out of Stock: "${prod.name}" has 0 units remaining! Restock needed.`
             : `⚠️ Low Stock Alert: "${prod.name}" is running low (${qty} unit${qty === 1 ? '' : 's'} left).`;
 
           // Deduplicate
-          const duplicate = existingNotifs.some(n => {
-            if (n.type !== 'inventory_alert') return false;
-            const notifTime = n.createdAt ? new Date(n.createdAt).getTime() : 0;
-            const isRecent = notifTime >= twelveHoursAgo;
-            if (!n.isRead || isRecent) {
-              if (n.data) {
-                try {
-                  const d = typeof n.data === 'string' ? JSON.parse(n.data) : n.data;
-                  if (d.productId === prod.id && !d.variantId) return true;
-                } catch {}
-              }
-              if (n.message && n.message.includes(`"${prod.name}"`)) return true;
-            }
-            return false;
-          });
+          const newNotif: Notification = {
+            id: generateUUID(),
+            tenantId: effectiveTenant,
+            userId: null,
+            type: 'inventory_alert',
+            message: msg,
+            data: JSON.stringify({
+              productId: prod.id,
+              productName: prod.name,
+              quantity: qty,
+              isOutOfStock,
+              type: 'low_stock'
+            }),
+            isRead: false,
+            createdAt: new Date()
+          } as any;
 
-          if (!duplicate) {
-            const newNotif: Notification = {
-              id: generateUUID(),
-              tenantId: effectiveTenant,
-              userId: null,
-              type: 'inventory_alert',
-              message: msg,
-              data: JSON.stringify({
-                productId: prod.id,
-                productName: prod.name,
-                quantity: qty,
-                isOutOfStock,
-                type: 'low_stock'
-              }),
-              isRead: false,
-              createdAt: new Date()
-            } as any;
-
-            await db.notifications.put(newNotif);
-            createdAlerts.push(newNotif);
-            try {
-              await api.post('/api/notifications', newNotif);
-            } catch {}
-          }
+          await db.notifications.put(newNotif);
+          activeAlertKeys.add(`product:${prod.id}`);
+          createdAlerts.push(newNotif);
+          try {
+            await api.post('/api/notifications', newNotif);
+          } catch {}
         }
       }
 
       // Check variants
-      const prodMap = new Map(allProducts.map(p => [p.id, p.name]));
+      const prodMap = productNames;
       for (const variant of allVariants) {
+        if (effectiveTenant && variant.tenantId && variant.tenantId !== effectiveTenant) continue;
         const qty = Number(variant.quantity ?? 0);
-        if (qty <= 5) {
+        if (qty <= 20) {
+          if (activeAlertKeys.has(`variant:${variant.id}`)) continue;
           const isOutOfStock = qty <= 0;
           const parentName = prodMap.get(variant.productId) || 'Product';
           const fullName = `${parentName} (${variant.name})`;
@@ -293,47 +356,30 @@ export const NotificationService = {
             ? `🚨 Out of Stock: "${fullName}" has 0 units remaining! Restock needed.`
             : `⚠️ Low Stock Alert: "${fullName}" is running low (${qty} unit${qty === 1 ? '' : 's'} left).`;
 
-          const duplicate = existingNotifs.some(n => {
-            if (n.type !== 'inventory_alert') return false;
-            const notifTime = n.createdAt ? new Date(n.createdAt).getTime() : 0;
-            const isRecent = notifTime >= twelveHoursAgo;
-            if (!n.isRead || isRecent) {
-              if (n.data) {
-                try {
-                  const d = typeof n.data === 'string' ? JSON.parse(n.data) : n.data;
-                  if (d.variantId === variant.id) return true;
-                } catch {}
-              }
-              if (n.message && n.message.includes(`"${fullName}"`)) return true;
-            }
-            return false;
-          });
+          const newNotif: Notification = {
+            id: generateUUID(),
+            tenantId: effectiveTenant,
+            userId: null,
+            type: 'inventory_alert',
+            message: msg,
+            data: JSON.stringify({
+              productId: variant.productId,
+              variantId: variant.id,
+              productName: fullName,
+              quantity: qty,
+              isOutOfStock,
+              type: 'low_stock'
+            }),
+            isRead: false,
+            createdAt: new Date()
+          } as any;
 
-          if (!duplicate) {
-            const newNotif: Notification = {
-              id: generateUUID(),
-              tenantId: effectiveTenant,
-              userId: null,
-              type: 'inventory_alert',
-              message: msg,
-              data: JSON.stringify({
-                productId: variant.productId,
-                variantId: variant.id,
-                productName: fullName,
-                quantity: qty,
-                isOutOfStock,
-                type: 'low_stock'
-              }),
-              isRead: false,
-              createdAt: new Date()
-            } as any;
-
-            await db.notifications.put(newNotif);
-            createdAlerts.push(newNotif);
-            try {
-              await api.post('/api/notifications', newNotif);
-            } catch {}
-          }
+          await db.notifications.put(newNotif);
+          activeAlertKeys.add(`variant:${variant.id}`);
+          createdAlerts.push(newNotif);
+          try {
+            await api.post('/api/notifications', newNotif);
+          } catch {}
         }
       }
 
@@ -341,6 +387,8 @@ export const NotificationService = {
     } catch (err) {
       console.error('Error generating low stock alerts:', err);
       return [];
+    } finally {
+      lowStockCheckRunning = false;
     }
   }
 };
@@ -1040,6 +1088,7 @@ export class ProductService {
       createdAt: (product as any).createdAt instanceof Date ? (product as any).createdAt.toISOString() : new Date().toISOString(),
       updatedAt: (product as any).updatedAt instanceof Date ? (product as any).updatedAt.toISOString() : new Date().toISOString(),
     }]).catch(error => console.error('Error syncing products after add:', error));
+    void NotificationService.checkAndGenerateLowStockAlerts().catch(error => console.warn('Low-stock refresh failed:', error));
     return product;
   }
 
@@ -1092,10 +1141,14 @@ export class ProductService {
         updatedAt: new Date().toISOString(),
       }]).catch(error => console.error('Error syncing products after update:', error));
     }
+    if (cleanUpdates.quantity !== undefined) {
+      void NotificationService.checkAndGenerateLowStockAlerts().catch(error => console.warn('Low-stock refresh failed:', error));
+    }
   }
 
   static async deleteProduct(id: string): Promise<void> {
     await db.products.delete(id);
+    void NotificationService.checkAndGenerateLowStockAlerts().catch(error => console.warn('Low-stock refresh failed:', error));
     // For delete, we'll rely on periodic sync
     console.warn('Product deleted locally, sync with server will be handled in periodic sync');
   }
@@ -1122,6 +1175,7 @@ export class ProductService {
       quantity: newQuantity,
       updatedAt: new Date().toISOString()
     }]).catch(e => console.warn('Immediate stock sync failed, will rely on periodic sync', e));
+    void NotificationService.checkAndGenerateLowStockAlerts().catch(error => console.warn('Low-stock refresh failed:', error));
   }
 
   static async addVariant(productId: string, data: { name: string; price: number; cost: number; quantity?: number; barcode?: string; boxBarcode?: string; unitsPerBox?: number; boxCost?: number; image?: string | null }): Promise<Variant> {
@@ -1157,6 +1211,7 @@ export class ProductService {
       createdAt: (variant as any).createdAt instanceof Date ? (variant as any).createdAt.toISOString() : new Date().toISOString(),
       updatedAt: (variant as any).updatedAt instanceof Date ? (variant as any).updatedAt.toISOString() : new Date().toISOString(),
     }]).catch(e => console.error('Failed to sync variant', e));
+    void NotificationService.checkAndGenerateLowStockAlerts().catch(error => console.warn('Low-stock refresh failed:', error));
     return variant;
   }
 
@@ -1177,6 +1232,9 @@ export class ProductService {
         ...updated,
         updatedAt: new Date().toISOString()
       }]).catch(e => console.error('Failed to sync variant update', e));
+    }
+    if (updates.quantity !== undefined) {
+      void NotificationService.checkAndGenerateLowStockAlerts().catch(error => console.warn('Low-stock refresh failed:', error));
     }
   }
 }
@@ -1424,6 +1482,7 @@ export class SalesService {
       throw new Error(`Failed to update inventory: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 
+    void NotificationService.checkAndGenerateLowStockAlerts((saleData as any).tenantId || (saleData as any).tenant_id).catch(error => console.warn('Low-stock refresh failed:', error));
     return sale as Sale;
   }
 
@@ -2039,6 +2098,7 @@ export class BulkInventoryService {
               }
             });
 
+            void NotificationService.checkAndGenerateLowStockAlerts(payload.tenantId).catch(error => console.warn('Low-stock refresh failed:', error));
             return res;
           }
         } catch (netErr: any) {
@@ -2174,6 +2234,7 @@ export class BulkInventoryService {
         });
       });
 
+      void NotificationService.checkAndGenerateLowStockAlerts(payload.tenantId).catch(error => console.warn('Low-stock refresh failed:', error));
       return {
         success: true,
         offlineQueued: true,

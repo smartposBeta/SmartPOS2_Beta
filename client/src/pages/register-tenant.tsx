@@ -13,6 +13,8 @@ import { X } from 'lucide-react';
 
 type DeviceStatus = {
   bound: boolean;
+  identityVerified?: boolean;
+  localAccountPresent?: boolean;
   tenant?: {
     id: string;
     storeName?: string;
@@ -45,17 +47,30 @@ const RegisterTenant: React.FC = () => {
   const { toast } = useToast();
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [showUnbindConfirm, setShowUnbindConfirm] = useState(false);
   const [unbindLoading, setUnbindLoading] = useState(false);
 
   const checkDeviceStatus = useCallback(async () => {
     setStatusLoading(true);
+    setStatusError(null);
+    setDeviceStatus(null);
     try {
-      const data: DeviceStatus = await api.get('/api/tenants/device-status');
-      setDeviceStatus(data);
+      const response: DeviceStatus = await api.get('/api/tenants/device-status');
+      if (typeof response?.bound !== 'boolean' || typeof response?.identityVerified !== 'boolean') {
+        throw new Error('Device status response was incomplete or from an unsupported server version');
+      }
+      const identityVerified = response.identityVerified === true;
+      setDeviceStatus({
+        ...response,
+        identityVerified,
+        localAccountPresent: response.localAccountPresent === true,
+        tenant: identityVerified ? response.tenant : null,
+        admin: identityVerified ? response.admin : null,
+      });
     } catch (e) {
       console.warn('[register-tenant] Failed to check device status');
-      setDeviceStatus({ bound: false, tenant: null, admin: null });
+      setStatusError('Device binding could not be verified. Retry before registering a store.');
     } finally {
       setStatusLoading(false);
     }
@@ -121,6 +136,7 @@ const RegisterTenant: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (statusLoading || statusError || deviceStatus?.bound || deviceStatus?.localAccountPresent) return;
     setLoading(true);
     setResult(null);
 
@@ -289,7 +305,19 @@ const RegisterTenant: React.FC = () => {
                 </motion.div>
               )}
 
-              {!statusLoading && deviceStatus?.bound && (
+              {statusError && (
+                <div className="mb-6 flex items-start gap-3 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-amber-200">
+                  <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                  <div className="flex-1 text-xs font-medium">
+                    <p>{statusError}</p>
+                    <Button type="button" variant="outline" onClick={checkDeviceStatus} className="mt-3 h-9 rounded-xl border-amber-500/40 text-amber-100">
+                      Retry status check
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {!statusLoading && (deviceStatus?.bound || deviceStatus?.localAccountPresent) && (
                 <AnimatePresence>
                   <motion.div
                     initial={{ opacity: 0, y: -10, height: 0 }}
@@ -306,22 +334,39 @@ const RegisterTenant: React.FC = () => {
                           <div className="text-left flex-1">
                             <div className="flex items-center gap-2 mb-0.5">
                               <Badge variant="destructive" className="bg-white/25 border-0 text-white text-[9px] font-black uppercase tracking-widest rounded-full px-2.5 py-0.5">
-                                Device Bound
+                                {deviceStatus.bound ? 'Device Bound' : 'Local Account Found'}
                               </Badge>
+                              <span className="text-[9px] font-bold text-white/80 uppercase tracking-widest">
+                                {deviceStatus.identityVerified ? 'Identity verified' : 'Identity unavailable'}
+                              </span>
                             </div>
                             <h3 className="text-sm font-black tracking-tight">
-                              {deviceStatus.tenant?.storeName || deviceStatus.admin?.businessName || 'Registered Store'}
+                              {deviceStatus.identityVerified
+                                ? deviceStatus.tenant?.storeName || deviceStatus.admin?.businessName || 'Store name unavailable'
+                                : 'Account identity unavailable'}
                             </h3>
                           </div>
                         </div>
                       </div>
                       <CardContent className="p-4 space-y-2.5">
+                        {!deviceStatus.identityVerified && (
+                          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-[10px] font-semibold leading-relaxed text-amber-200">
+                            {deviceStatus.bound
+                              ? 'The device binding exists, but the account could not be verified. Cached account details are hidden.'
+                              : 'Local account data exists without an explicit binding. Sign in to restore the binding before setting up another store.'}
+                            <Button type="button" variant="outline" onClick={checkDeviceStatus} className="mt-2 h-8 rounded-lg border-amber-500/40 text-[10px] text-amber-100">
+                              Refresh status
+                            </Button>
+                          </div>
+                        )}
+                        {deviceStatus.identityVerified && deviceStatus.admin && (
+                        <>
                         <div className="flex items-center gap-2.5 p-2.5 bg-slate-900/50 rounded-2xl border border-slate-700/60">
                           <div className="w-8 h-8 bg-blue-500/15 text-blue-400 rounded-lg flex items-center justify-center flex-shrink-0">
                             <UserIcon className="w-4 h-4" />
                           </div>
                           <div className="flex-1 min-w-0 text-left">
-                            <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Owner</p>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Bound Account User</p>
                             <p className="text-xs font-bold text-white truncate">
                               {deviceStatus.admin?.ownerName || deviceStatus.admin?.username || 'Store Admin'}
                             </p>
@@ -338,18 +383,26 @@ const RegisterTenant: React.FC = () => {
                             </div>
                           </div>
                         )}
+                        </>
+                        )}
                         <p className="text-[10px] font-semibold text-amber-300/90 leading-relaxed pt-1">
                           This device is already registered. You must unbind & factory-reset before creating a new store account.
                         </p>
-                        <Button
-                          type="button"
-                          onClick={() => setShowUnbindConfirm(true)}
-                          variant="destructive"
-                          className="w-full rounded-2xl h-11 font-black text-xs shadow-lg bg-rose-600 hover:bg-rose-700 border-0"
-                        >
-                          <Unlock className="w-4 h-4 mr-1.5" />
-                          Unbind & Reset This Device
-                        </Button>
+                        {deviceStatus.bound ? (
+                          <Button
+                            type="button"
+                            onClick={() => setShowUnbindConfirm(true)}
+                            variant="destructive"
+                            className="w-full rounded-2xl h-11 font-black text-xs shadow-lg bg-rose-600 hover:bg-rose-700 border-0"
+                          >
+                            <Unlock className="w-4 h-4 mr-1.5" />
+                            Unbind & Reset This Device
+                          </Button>
+                        ) : (
+                          <p className="text-[10px] font-semibold text-amber-200">
+                            Use “Sign In to Existing Store” to recover this account and establish its explicit device binding.
+                          </p>
+                        )}
                       </CardContent>
                     </Card>
                   </motion.div>
@@ -455,7 +508,7 @@ const RegisterTenant: React.FC = () => {
                 {/* Submit Button */}
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || statusLoading || !!statusError || !!deviceStatus?.bound || !!deviceStatus?.localAccountPresent}
                   className="w-full bg-gradient-to-r from-blue-600 via-blue-500 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-4 rounded-xl shadow-lg shadow-blue-600/30 hover:shadow-blue-600/50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all disabled:opacity-50 flex items-center justify-center gap-2 group mt-2"
                 >
                   {loading ? (

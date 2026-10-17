@@ -5,7 +5,7 @@ import { useApp } from '@/contexts/AppContext';
 import { useDevices } from '@/contexts/DeviceContext';
 import { WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useLanguage } from '@/contexts/LanguageContext';
+import { LocalizedContent, useLanguage } from '@/contexts/LanguageContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -63,6 +63,7 @@ const Layout: React.FC<LayoutProps> = ({ children, showNavigation = true, fullWi
         <button
           type="button"
           onClick={() => setLanguage('en')}
+          aria-label={t('english')}
           className={cn(
             "px-2.5 py-1 rounded-full transition-all duration-200 flex items-center gap-1",
             language === 'en' ? "bg-amber-600 text-white shadow-sm" : "text-gray-600 hover:text-gray-900"
@@ -73,6 +74,7 @@ const Layout: React.FC<LayoutProps> = ({ children, showNavigation = true, fullWi
         <button
           type="button"
           onClick={() => setLanguage('tl')}
+          aria-label={t('tagalog')}
           className={cn(
             "px-2.5 py-1 rounded-full transition-all duration-200 flex items-center gap-1",
             language === 'tl' ? "bg-amber-600 text-white shadow-sm" : "text-gray-600 hover:text-gray-900"
@@ -89,7 +91,7 @@ const Layout: React.FC<LayoutProps> = ({ children, showNavigation = true, fullWi
         showNavigation && isAuthenticated && isAdmin && "pb-24",
         "px-2 sm:px-4 md:px-6"
       )}>
-        {children}
+        <LocalizedContent>{children}</LocalizedContent>
       </main>
       
       {/* Bottom Navigation */}

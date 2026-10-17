@@ -61,6 +61,7 @@ const BottomNavigation: React.FC = () => {
                     key={item.id}
                     onClick={() => setLocation(item.path)}
                     data-testid={`nav-${item.id}`}
+                    aria-label={t('salesScanner')}
                     className="relative -top-6 sm:-top-8 z-10"
                   >
                     <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-br from-[#BF953F] via-[#FCF6BA] to-[#B38728] rounded-full flex items-center justify-center shadow-[0_10px_25px_rgba(191,149,63,0.4)] touch-feedback hover:scale-110 active:scale-95 transition-all duration-300 transform border-2 sm:border-4 border-white"

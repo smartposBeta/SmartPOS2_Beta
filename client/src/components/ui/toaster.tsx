@@ -7,6 +7,7 @@ import {
   ToastTitle,
   ToastViewport,
 } from "@/components/ui/toast"
+import { LocalizedContent } from "@/contexts/LanguageContext"
 
 export function Toaster() {
   const { toasts } = useToast()
@@ -17,12 +18,12 @@ export function Toaster() {
         return (
           <Toast key={id} {...props}>
             <div className="grid gap-1">
-              {title && <ToastTitle>{title}</ToastTitle>}
+              {title && <ToastTitle><LocalizedContent>{title}</LocalizedContent></ToastTitle>}
               {description && (
-                <ToastDescription>{description}</ToastDescription>
+                <ToastDescription><LocalizedContent>{description}</LocalizedContent></ToastDescription>
               )}
             </div>
-            {action}
+            {action && <LocalizedContent>{action}</LocalizedContent>}
             <ToastClose />
           </Toast>
         )

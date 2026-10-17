@@ -3,6 +3,7 @@ import { motion, useDragControls, PanInfo, AnimatePresence } from 'framer-motion
 import { Home, Trash2, CreditCard, AlertTriangle, LogOut, Search, ArrowLeft, Edit, Usb, Bluetooth, Send, ShoppingCart, AlertCircle, Package, X, ChevronUp, ChevronDown, Plus, User, Cpu, RefreshCw, DollarSign, Info } from 'lucide-react';
 import { useLocation } from 'wouter';
 import Layout from '@/components/Layout';
+import ProductImage from '@/components/ProductImage';
 import Scanner from '@/components/Scanner';
 import ExternalDeviceManager from '@/components/ExternalDeviceManager';
 import { Button } from '@/components/ui/button';
@@ -59,6 +60,10 @@ const ScannerSales: React.FC = () => {
   const [isValidatingAdmin, setIsValidatingAdmin] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [isCartCollapsed, setIsCartCollapsed] = useState(false);
+  const [cartWidth, setCartWidth] = useState(400);
+  const [cartHeight, setCartHeight] = useState(() =>
+    typeof window === 'undefined' ? 520 : Math.round(window.innerHeight * 0.65)
+  );
   
   // Non-Inventory State
   const [isNonInventoryOpen, setIsNonInventoryOpen] = useState(false);
@@ -863,6 +868,31 @@ const ScannerSales: React.FC = () => {
   };
 
   const isDesktop = deviceMode === 'pc' || deviceMode === 'tablet';
+  const handleCartResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const initialWidth = cartWidth;
+    const initialHeight = cartHeight;
+    const resize = (moveEvent: PointerEvent) => {
+      if (isDesktop) {
+        const maxWidth = Math.max(320, window.innerWidth - 280);
+        setCartWidth(Math.min(maxWidth, Math.max(320, initialWidth + startX - moveEvent.clientX)));
+      } else {
+        const maxHeight = Math.max(190, window.innerHeight - 100);
+        setCartHeight(Math.min(maxHeight, Math.max(190, initialHeight + startY - moveEvent.clientY)));
+      }
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', resize);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+    window.addEventListener('pointermove', resize);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  };
 
   return (
     <Layout showNavigation={false}>
@@ -1032,7 +1062,7 @@ const ScannerSales: React.FC = () => {
                   </Select>
                 </div>
                 <div className="flex-1 overflow-y-auto custom-scrollbar pr-1">
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 p-1 pb-10">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 p-1 pb-10">
                     {filteredProducts.map(p => (
                       <motion.div 
                         key={p.id} 
@@ -1041,20 +1071,28 @@ const ScannerSales: React.FC = () => {
                         className="bg-white border border-slate-100 rounded-[1.75rem] p-2.5 cursor-pointer shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all group"
                       >
                         <div className="aspect-square bg-slate-50 rounded-[1.25rem] mb-2.5 flex items-center justify-center overflow-hidden relative border border-slate-50">
-                          {p.image ? (
-                            <img src={p.image} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
-                              <Package className="w-7 h-7 text-slate-200" />
-                            </div>
-                          )}
-                          {!p.isNonInventory && (p.quantity ?? 0) < 10 && (
+                          <ProductImage
+                            src={p.image}
+                            alt={p.name}
+                            className="absolute inset-0 h-full w-full bg-gradient-to-br from-slate-50 to-slate-100"
+                            imageClassName="group-hover:scale-110 transition-transform duration-500"
+                            iconClassName="w-8 h-8 text-slate-300"
+                          />
+                          {!p.isNonInventory && (p.quantity ?? 0) <= 20 && (
                             <div className="absolute top-2 right-2 px-1.5 py-0.5 bg-red-500 text-white text-[7px] font-black uppercase rounded-lg shadow-sm">Low</div>
                           )}
                         </div>
                         <div className="px-1">
                           <h3 className="font-bold text-[10px] uppercase tracking-tight text-slate-800 line-clamp-1 group-hover:text-slate-900 transition-colors">{p.name}</h3>
                           <p className="font-black text-[#FF8882] text-xs mt-0.5">₱{p.price.toLocaleString()}</p>
+                          <div className="mt-2 flex items-center justify-between border-t border-slate-100 pt-2">
+                            <span className="text-[8px] font-bold uppercase tracking-wide text-slate-400">
+                              {p.isNonInventory ? 'Quantity' : <>{p.quantity ?? 0} <span>in stock</span></>}
+                            </span>
+                            <span className="rounded-md bg-slate-50 px-1.5 py-1 text-[8px] font-black uppercase tracking-wide text-[#9a7427]">
+                              Select qty & unit
+                            </span>
+                          </div>
                         </div>
                       </motion.div>
                     ))}
@@ -1067,25 +1105,66 @@ const ScannerSales: React.FC = () => {
           {/* Sidebar Cart - Mobile Optimized */}
           <motion.div
             animate={{ 
-              width: isDesktop ? '400px' : '100%',
-              height: isDesktop ? '100%' : (isCartCollapsed ? '65px' : '65vh'),
+              width: isDesktop ? (isCartCollapsed ? '72px' : `${cartWidth}px`) : '100%',
+              height: isDesktop ? '100%' : (isCartCollapsed ? '65px' : `${cartHeight}px`),
               y: isDesktop ? 0 : 0
             }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
             className={cn(
-              "bg-white flex flex-col z-30",
+              "relative bg-white flex flex-col z-30 overflow-hidden",
               isDesktop 
                 ? "h-full border-l border-gray-100 shadow-[-10px_0_30px_rgba(0,0,0,0.03)]" 
                 : "fixed bottom-0 left-0 right-0 rounded-t-[2rem] shadow-[0_-20px_50px_rgba(0,0,0,0.15)] border-t border-gray-100"
             )}
+            style={{ maxHeight: isDesktop ? undefined : 'calc(100dvh - 80px)', flexShrink: 0 }}
           >
+            {isDesktop && !isCartCollapsed && (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize customer cart"
+                title="Drag to resize cart"
+                className="absolute left-0 top-0 z-40 h-full w-2 cursor-ew-resize touch-none group"
+                onPointerDown={handleCartResizeStart}
+              >
+                <span className="absolute left-0 top-1/2 h-14 w-1 -translate-y-1/2 rounded-r bg-slate-200 transition-colors group-hover:bg-[#BF953F]" />
+              </div>
+            )}
+            {isDesktop && isCartCollapsed && (
+              <div className="flex h-full flex-col items-center gap-3 py-4">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Expand customer cart"
+                  title="Expand customer cart"
+                  onClick={() => setIsCartCollapsed(false)}
+                  className="h-10 w-10 rounded-xl text-[#BF953F]"
+                >
+                  <ShoppingCart className="h-5 w-5" />
+                </Button>
+                <span className="text-xs font-black text-slate-700">{cart.length}</span>
+                <span className="text-[10px] font-black text-[#FF8882] [writing-mode:vertical-rl]">
+                  ₱{getCartTotal().toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+            )}
             {/* Mobile Drag Handle / Header */}
             {!isDesktop && (
               <div 
                 className="w-full py-2 flex flex-col items-center cursor-pointer active:bg-gray-50 transition-colors rounded-t-[2rem]" 
                 onClick={() => setIsCartCollapsed(!isCartCollapsed)}
               >
-                <div className="w-12 h-1.5 bg-gray-200 rounded-full mb-2" />
+                <div
+                  className="flex h-5 w-16 cursor-ns-resize items-center justify-center touch-none"
+                  onPointerDown={handleCartResizeStart}
+                  onClick={event => event.stopPropagation()}
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize customer cart"
+                  title="Drag to resize cart"
+                >
+                  <span className="h-1.5 w-12 rounded-full bg-gray-200" />
+                </div>
                 {!isCartCollapsed && (
                   <div className="flex items-center gap-2 py-1">
                     <ShoppingCart className="w-3.5 h-3.5 text-[#BF953F]" />
@@ -1123,7 +1202,8 @@ const ScannerSales: React.FC = () => {
             
             <div className={cn(
               "flex flex-col flex-1 min-h-0",
-              isDesktop ? "p-6" : "px-6 pb-6 pt-0"
+              isDesktop ? "p-6" : "px-6 pb-6 pt-0",
+              isDesktop && isCartCollapsed && "hidden"
             )}>
               {/* Desktop Header */}
               {isDesktop && (
@@ -1160,6 +1240,16 @@ const ScannerSales: React.FC = () => {
                         onClick={() => setIsNonInventoryOpen(true)}
                       >
                         + Non-Inv
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Collapse cart"
+                        aria-label="Collapse cart"
+                        onClick={() => setIsCartCollapsed(true)}
+                        className="h-9 w-9 rounded-xl text-slate-500 hover:text-[#BF953F]"
+                      >
+                        <ChevronDown className="h-4 w-4" />
                       </Button>
                     </>
                   )}
@@ -1444,13 +1534,22 @@ const ScannerSales: React.FC = () => {
             <div className="space-y-6 py-2">
               <div className="space-y-2">
                 <Label className="text-[10px] font-black uppercase tracking-widest text-gray-400 ml-1">Enter Quantity</Label>
-                <Input 
+                <Input
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
                   type="number" 
                   value={tempQuantity} 
-                  onChange={e => setTempQuantity(parseInt(e.target.value) || '')} 
+                  onChange={e => setTempQuantity(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
                   className="h-14 bg-gray-50 border-none rounded-2xl font-black text-xl px-6 focus:ring-2 focus:ring-[#BF953F]/20"
                   autoFocus 
                 />
+                <p className="text-[11px] text-gray-500 px-1">
+                  {tempQuantity === '' ? 'Enter a whole-number quantity.' : `${tempQuantity} ${tempUnit} = ${tempQuantity * getUnitMultiplier(tempUnit)} pieces`}
+                  {!scannedProduct?.isNonInventory && scannedProduct && (
+                    <span> · {scannedProduct.quantity} pieces available</span>
+                  )}
+                </p>
               </div>
               <div className="space-y-2">
                 <Label className="text-[10px] font-black uppercase tracking-widest text-gray-400 ml-1">Select Unit</Label>

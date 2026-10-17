@@ -26,6 +26,7 @@ import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import api from '@/lib/api';
 import ExternalDeviceManager from '@/components/ExternalDeviceManager';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 const profileSchema = z.object({
   businessName: z.string().min(1, 'Business name is required'),
@@ -54,6 +55,8 @@ type SecurityQuestionsFormData = z.infer<typeof securityQuestionsSchema>;
 
 type DeviceStatus = {
   bound: boolean;
+  identityVerified?: boolean;
+  localAccountPresent?: boolean;
   tenant?: {
     id?: string;
     storeName?: string;
@@ -116,6 +119,7 @@ const defaultExternalScannerSettings: ExternalScannerSettings = {
 
 const HardwareSettingsDialog: React.FC<{ open: boolean; onOpenChange: (open: boolean) => void }> = ({ open, onOpenChange }) => {
   return (
+    <LocalizedContent>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
@@ -130,6 +134,7 @@ const HardwareSettingsDialog: React.FC<{ open: boolean; onOpenChange: (open: boo
         <ExternalDeviceManager />
       </DialogContent>
     </Dialog>
+    </LocalizedContent>
   );
 };
 
@@ -179,6 +184,7 @@ const ProfileSettings: React.FC = () => {
 
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [showDeviceBindingDialog, setShowDeviceBindingDialog] = useState(false);
   const [showUnbindConfirm, setShowUnbindConfirm] = useState(false);
   const [unbindLoading, setUnbindLoading] = useState(false);
@@ -454,23 +460,25 @@ const ProfileSettings: React.FC = () => {
   const checkDeviceStatus = useCallback(async () => {
     try {
       setStatusLoading(true);
-      const res = await fetch('/api/tenants/device-status');
-      if (res.ok) {
-        const data = await res.json();
-        setDeviceStatus(data as DeviceStatus);
-      } else {
-        const authRes = await fetch('/api/auth/status');
-        if (authRes.ok) {
-          const ad = await authRes.json();
-          setDeviceStatus({
-            bound: !!ad.tenantId || !!ad.adminExists,
-            tenant: ad.tenant ? { id: ad.tenant?.id, storeName: ad.tenant?.storeName || ad.tenant?.businessName, subdomain: ad.tenant?.subdomain } : null,
-            admin: ad.admin ? { id: ad.admin?.id, ownerName: ad.admin?.ownerName, username: ad.admin?.username, mobile: ad.admin?.mobile, email: ad.admin?.email, role: ad.admin?.role } : null
-          });
-        }
+      setStatusError(null);
+      setDeviceStatus(null);
+      const res = await fetch('/api/tenants/device-status', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Device status request failed (${res.status})`);
+      const data = await res.json();
+      if (typeof data?.bound !== 'boolean' || typeof data?.identityVerified !== 'boolean') {
+        throw new Error('Device status response was incomplete or from an unsupported server version');
       }
+      const identityVerified = data.identityVerified === true;
+      setDeviceStatus({
+        ...data,
+        identityVerified,
+        localAccountPresent: data.localAccountPresent === true,
+        tenant: identityVerified ? data.tenant : null,
+        admin: identityVerified ? data.admin : null,
+      } as DeviceStatus);
     } catch (e) {
       console.warn('[device-status] failed', e);
+      setStatusError(e instanceof Error ? e.message : 'Device status could not be loaded.');
     } finally {
       setStatusLoading(false);
     }
@@ -684,7 +692,19 @@ const ProfileSettings: React.FC = () => {
                 setBackupCounts({users, products, sales, saleItems, staff, expenses, purchases, creditors});
                 setShowBackupDialog(true);
               }} />
-              <SettingsCard icon={Lock} title="Device Binding Status" subtitle={deviceStatus?.bound ? "Account Linked" : statusLoading ? "Checking…" : "No Account Linked"} color={deviceStatus?.bound ? "amber" : "teal"} onClick={() => setShowDeviceBindingDialog(true)} />
+              <SettingsCard
+                icon={Lock}
+                title="Device Binding Status"
+                subtitle={
+                  statusLoading ? "Checking…" :
+                  statusError ? "Status unavailable" :
+                  deviceStatus?.bound ? (deviceStatus.identityVerified ? "Bound account verified" : "Bound · identity unavailable") :
+                  deviceStatus?.localAccountPresent ? "Binding unknown · local account data" :
+                  "No Account Linked"
+                }
+                color={deviceStatus?.bound || deviceStatus?.localAccountPresent || statusError ? "amber" : "teal"}
+                onClick={() => setShowDeviceBindingDialog(true)}
+              />
               <SettingsCard icon={HelpCircle} title="Help & Support" subtitle="Guides & Tutorials" color="blue" onClick={() => setShowHelpSupportDialog(true)} />
             </div>
           </div>
@@ -758,6 +778,39 @@ const ProfileSettings: React.FC = () => {
                   <Loader2 className="w-8 h-8 text-[#BF953F] animate-spin" />
                   <p className="text-xs font-bold text-gray-500 uppercase tracking-widest">Checking device status…</p>
                 </div>
+              ) : statusError ? (
+                <Card className="border border-rose-200 bg-rose-50 rounded-3xl shadow-sm">
+                  <CardContent className="p-6 text-center space-y-3">
+                    <AlertTriangle className="w-8 h-8 mx-auto text-rose-500" />
+                    <h3 className="font-bold text-gray-900">Device status could not be loaded.</h3>
+                    <p className="text-xs text-gray-600">The device binding could not be verified. Try again before relying on this status.</p>
+                    <Button variant="outline" onClick={checkDeviceStatus} className="rounded-xl">
+                      <RefreshCw className="w-3.5 h-3.5 mr-2" />
+                      Retry status check
+                    </Button>
+                  </CardContent>
+                </Card>
+              ) : deviceStatus?.localAccountPresent && !deviceStatus.bound ? (
+                <Card className="border-2 border-amber-500/40 bg-amber-50/60 rounded-3xl shadow-xl overflow-hidden">
+                  <div className="bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-4">
+                    <div className="flex items-center gap-3 text-white">
+                      <AlertTriangle className="w-6 h-6" />
+                      <div>
+                        <Badge className="mb-1 bg-white/20 text-white border-0 text-[9px] font-black uppercase tracking-widest">Binding unknown</Badge>
+                        <h3 className="text-base font-black tracking-tight">Local account data found</h3>
+                      </div>
+                    </div>
+                  </div>
+                  <CardContent className="p-5 space-y-3">
+                    <p className="text-xs font-semibold leading-relaxed text-amber-900">
+                      No explicit device binding is recorded. Local account data is present, but its identity is not shown as the bound store. Sign in to restore and verify the binding before registering another account.
+                    </p>
+                    <Button variant="outline" onClick={checkDeviceStatus} className="w-full rounded-xl">
+                      <RefreshCw className="w-3.5 h-3.5 mr-2" />
+                      Refresh status
+                    </Button>
+                  </CardContent>
+                </Card>
               ) : deviceStatus?.bound ? (
                 <Card className="border-2 border-amber-500/40 bg-amber-50/60 backdrop-blur-sm rounded-3xl shadow-xl overflow-hidden">
                   <div className="bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 px-6 py-4">
@@ -770,50 +823,65 @@ const ProfileSettings: React.FC = () => {
                           <Badge variant="destructive" className="bg-white/25 border-0 text-white text-[9px] font-black uppercase tracking-widest rounded-full px-3 py-0.5">
                             Device Bound
                           </Badge>
+                          <span className="text-[9px] font-bold text-white/80 uppercase tracking-widest">
+                            {deviceStatus.identityVerified ? 'Identity verified' : 'Identity unavailable'}
+                          </span>
                         </div>
                         <h3 className="text-base font-black tracking-tight">
-                          {deviceStatus.tenant?.storeName || deviceStatus.admin?.businessName || user?.businessName || 'Registered Store'}
+                          {deviceStatus.identityVerified
+                            ? deviceStatus.tenant?.storeName || deviceStatus.admin?.businessName || 'Store name unavailable'
+                            : 'Account identity unavailable'}
                         </h3>
-                        {deviceStatus.tenant?.subdomain && (
+                        {deviceStatus.identityVerified && deviceStatus.tenant?.subdomain && (
                           <p className="text-[10px] font-bold text-white/80 uppercase tracking-widest mt-0.5">{deviceStatus.tenant.subdomain}.smartpos.app</p>
                         )}
                       </div>
                     </div>
                   </div>
                   <CardContent className="p-5 space-y-3">
+                    {!deviceStatus.identityVerified && (
+                      <div className="p-3.5 bg-amber-100/80 rounded-2xl border border-amber-200/80 flex items-start gap-2.5">
+                        <AlertTriangle className="w-4.5 h-4.5 text-amber-600 flex-shrink-0 mt-0.5" />
+                        <p className="text-[11px] font-semibold text-amber-900/90 leading-relaxed">
+                          The device binding exists, but the store account could not be verified. Cached or guessed account details are hidden. Refresh status when the server is reachable.
+                        </p>
+                      </div>
+                    )}
+                    {deviceStatus.identityVerified && deviceStatus.admin && (
                     <div className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-gray-100 shadow-sm">
                       <div className="w-9 h-9 bg-blue-50 text-blue-500 rounded-lg flex items-center justify-center flex-shrink-0">
                         <UserIcon className="w-4.5 h-4.5" />
                       </div>
                       <div className="flex-1 min-w-0 text-left">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Account Owner</p>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Bound Account User</p>
                         <p className="text-sm font-bold text-gray-900 truncate">
-                          {deviceStatus.admin?.ownerName || deviceStatus.admin?.username || user?.ownerName || 'Store Admin'}
+                          {deviceStatus.admin?.ownerName || deviceStatus.admin?.username || 'Owner details unavailable'}
                         </p>
                         {deviceStatus.admin?.role && (
                           <Badge className="mt-1 bg-blue-50 text-blue-600 border-0 text-[9px] font-black uppercase tracking-widest">{deviceStatus.admin.role}</Badge>
                         )}
                       </div>
                     </div>
-                    {(deviceStatus.admin?.mobile || user?.mobile) && (
+                    )}
+                    {deviceStatus.identityVerified && deviceStatus.admin?.mobile && (
                       <div className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-gray-100 shadow-sm">
                         <div className="w-9 h-9 bg-emerald-50 text-emerald-500 rounded-lg flex items-center justify-center flex-shrink-0">
                           <Smartphone className="w-4.5 h-4.5" />
                         </div>
                         <div className="flex-1 min-w-0 text-left">
                           <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Contact Number</p>
-                          <p className="text-sm font-bold text-gray-900 truncate">{deviceStatus.admin?.mobile || user?.mobile}</p>
+                          <p className="text-sm font-bold text-gray-900 truncate">{deviceStatus.admin.mobile}</p>
                         </div>
                       </div>
                     )}
-                    {(deviceStatus.admin?.email || user?.email) && (
+                    {deviceStatus.identityVerified && deviceStatus.admin?.email && (
                       <div className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-gray-100 shadow-sm">
                         <div className="w-9 h-9 bg-sky-50 text-sky-500 rounded-lg flex items-center justify-center flex-shrink-0">
                           <Mail className="w-4.5 h-4.5" />
                         </div>
                         <div className="flex-1 min-w-0 text-left">
                           <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Email Address</p>
-                          <p className="text-sm font-bold text-gray-900 truncate">{deviceStatus.admin?.email || user?.email}</p>
+                          <p className="text-sm font-bold text-gray-900 truncate">{deviceStatus.admin.email}</p>
                         </div>
                       </div>
                     )}

@@ -455,7 +455,16 @@ const AdminMain: React.FC = () => {
       socket.on('notification-received', (notification: Notification) => {
         setNotifications(prev => [notification, ...prev]);
         setUnreadCount(prev => prev + 1);
-        toast({ title: "New Notification", description: notification.message });
+        if (notification.type === 'inventory_alert') {
+          let productName = notification.message;
+          try {
+            const data = typeof notification.data === 'string' ? JSON.parse(notification.data) : notification.data;
+            productName = data?.productName || productName;
+          } catch {}
+          toast({ title: 'Low Stock', description: productName });
+        } else {
+          toast({ title: "New Notification", description: notification.message });
+        }
         loadNotifications();
       });
       socket.on('remittance-sent', () => {
@@ -1202,6 +1211,12 @@ const AdminMain: React.FC = () => {
                 ) : (
                   notifications.map((n) => {
                     const isInventoryAlert = n.type === 'inventory_alert';
+                    let inventoryAlertData: any = null;
+                    if (isInventoryAlert) {
+                      try {
+                        inventoryAlertData = typeof n.data === 'string' ? JSON.parse(n.data) : n.data;
+                      } catch {}
+                    }
                     return (
                       <div 
                         key={n.id} 
@@ -1230,7 +1245,18 @@ const AdminMain: React.FC = () => {
                               </span>
                             </div>
                           )}
-                          <p className={cn("text-xs leading-relaxed", !n.isRead ? "font-bold text-gray-900" : "text-gray-600")}>{n.message}</p>
+                          {isInventoryAlert && inventoryAlertData?.type === 'low_stock' ? (
+                            <div className="text-xs leading-relaxed">
+                              <p className={cn(!n.isRead ? "font-bold text-gray-900" : "text-gray-600")}>
+                                {inventoryAlertData.productName || n.message}
+                              </p>
+                              <p className="mt-1 text-[11px] text-gray-500">
+                                Current quantity: <strong className="text-gray-700">{inventoryAlertData.quantity}</strong> pieces
+                              </p>
+                            </div>
+                          ) : (
+                            <p className={cn("text-xs leading-relaxed", !n.isRead ? "font-bold text-gray-900" : "text-gray-600")}>{n.message}</p>
+                          )}
                           <div className="flex items-center justify-between mt-1.5">
                             <span className="text-[9px] text-gray-400 block">{new Date(n.createdAt as any).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                             {isInventoryAlert && (

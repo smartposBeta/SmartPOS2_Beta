@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Layout from '@/components/Layout';
+import ProductImage from '@/components/ProductImage';
 import { useLocation, useRoute } from 'wouter';
 import { 
   ArrowLeft, 
@@ -340,10 +341,11 @@ export default function ProductVariantAdd() {
               >
                 {imagePreview ? (
                   <>
-                    <img
+                    <ProductImage
                       src={imagePreview}
                       alt="Variant preview"
-                      className="w-full h-full object-cover"
+                      className="h-full w-full"
+                      fallbackLabel="Image unavailable"
                     />
                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-xs font-medium">
                       Click to Change

@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { SalesService, ProductService, StaffService } from '@/lib/db';
 import { cn } from '@/lib/utils';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 const AdminDashboard: React.FC = () => {
   const [, setLocation] = useLocation();
@@ -75,6 +76,7 @@ const AdminDashboard: React.FC = () => {
   }, [features.length]);
 
   return (
+    <LocalizedContent>
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Top Welcome Section */}
       <div className="bg-slate-900 pt-12 pb-20 px-6 rounded-b-[3rem] relative overflow-hidden">
@@ -188,8 +190,8 @@ const AdminDashboard: React.FC = () => {
         </p>
       </div>
     </div>
+    </LocalizedContent>
   );
 };
 
 export default AdminDashboard;
-

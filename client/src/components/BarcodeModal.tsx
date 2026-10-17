@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from '@/components/ui/button';
 import { Download, Printer } from 'lucide-react';
 import BarcodePreview from './BarcodePreview';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 interface BarcodeModalProps {
   isOpen: boolean;
@@ -83,6 +84,7 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({
   };
 
   return (
+    <LocalizedContent>
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-md bg-white dark:bg-gray-800">
         <DialogHeader>
@@ -115,6 +117,7 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({
         </div>
       </DialogContent>
     </Dialog>
+    </LocalizedContent>
   );
 };
 

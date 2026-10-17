@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { ArrowLeft, Search, Filter, Plus, Edit, Trash2, Package, Image as ImageIcon, PlusCircle, Tag, X, AlertTriangle, Upload, Download, FileSpreadsheet, Boxes, History } from 'lucide-react';
 import { useLocation } from 'wouter';
 import Layout from '@/components/Layout';
+import ProductImage from '@/components/ProductImage';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -422,11 +423,11 @@ const InventoryManagement: React.FC = () => {
     const matchesSearch = product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          (product.barcode && product.barcode.includes(searchTerm));
     const matchesCategory = selectedCategory === 'All' || product.category === selectedCategory;
-    const matchesLowStock = !lowStockOnly || (product.quantity <= 10);
+    const matchesLowStock = !lowStockOnly || (product.quantity <= 20);
     return matchesSearch && matchesCategory && matchesLowStock;
   });
 
-  const lowStockCount = products.filter(p => p.quantity <= 10).length;
+  const lowStockCount = products.filter(p => p.quantity <= 20).length;
 
   const toggleSelectProduct = (id: string) => {
     setSelectedProductIds(prev => {
@@ -584,6 +585,25 @@ const InventoryManagement: React.FC = () => {
     setIsAddDialogOpen(true);
   };
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || products.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const editId = params.get('edit');
+    if (!editId) return;
+
+    const product = products.find(candidate => candidate.id === editId);
+    if (!product) return;
+
+    handleEdit(product);
+    params.delete('edit');
+    const query = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
+    );
+  }, [products]);
+
   const handleDelete = async () => {
     if (!deletingProduct) return;
 
@@ -609,7 +629,7 @@ const InventoryManagement: React.FC = () => {
 
   const getStockStatus = (quantity: number) => {
     if (quantity === 0) return { label: 'out of stock', color: 'text-red-500' };
-    if (quantity <= 5) return { label: 'low stock', color: 'text-orange-500' };
+    if (quantity <= 20) return { label: 'low stock', color: 'text-orange-500' };
     return { label: 'in stock', color: 'text-green-500' };
   };
 
@@ -812,19 +832,12 @@ const InventoryManagement: React.FC = () => {
                             />
                           )}
                           {/* Product Image */}
-                          <div className="flex-shrink-0">
-                            {product.image ? (
-                              <img
-                                src={product.image}
-                                alt={product.name}
-                                className="w-16 h-16 rounded-lg object-cover"
-                              />
-                            ) : (
-                              <div className="w-16 h-16 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center">
-                                <ImageIcon className="w-8 h-8 text-gray-400 dark:text-gray-500" />
-                              </div>
-                            )}
-                          </div>
+                          <ProductImage
+                            src={product.image}
+                            alt={product.name}
+                            className="h-16 w-16 flex-shrink-0 rounded-lg bg-gray-100 dark:bg-gray-700"
+                            iconClassName="h-8 w-8"
+                          />
 
                           {/* Product Details */}
                           <div className="flex-1 min-w-0">
@@ -832,7 +845,7 @@ const InventoryManagement: React.FC = () => {
                             <p className="text-sm text-gray-500 dark:text-gray-400">Barcode: {product.barcode}</p>
                             <p className="text-sm text-gray-500 dark:text-gray-400">Category: {product.category || 'general'}</p>
                             <p className="text-[#FF8882] font-medium">₱{product.price.toFixed(2)}</p>
-                            {product.quantity <= 10 && (
+                            {product.quantity <= 20 && (
                               <p className="text-xs text-red-500 inline-flex items-center"><AlertTriangle className="w-3 h-3 mr-1" />Low stock</p>
                             )}
                           </div>
@@ -976,17 +989,13 @@ const InventoryManagement: React.FC = () => {
                   <label htmlFor="product-image-upload" className="text-sm font-medium text-gray-700 dark:text-gray-300">Product Image</label>
                   <div className="flex flex-col sm:flex-row sm:items-center sm:space-x-4 space-y-3 sm:space-y-0">
                     <div className="relative">
-                      {productImage ? (
-                        <img
-                          src={productImage}
-                          alt="Product"
-                          className="w-20 h-20 rounded-lg object-cover"
-                        />
-                      ) : (
-                        <div className="w-20 h-20 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-600">
-                          <ImageIcon className="w-8 h-8 text-gray-400 dark:text-gray-500" />
-                        </div>
-                      )}
+                      <ProductImage
+                        src={productImage}
+                        alt="Product preview"
+                        className="h-20 w-20 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600"
+                        fallbackLabel={productImage ? 'Image unavailable' : 'Add photo'}
+                        iconClassName="h-8 w-8"
+                      />
                       <input
                         id="product-image-upload"
                         type="file"

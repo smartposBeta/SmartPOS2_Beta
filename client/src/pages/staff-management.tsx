@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { useLocation } from 'wouter';
 import Layout from '@/components/Layout';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -1298,6 +1299,7 @@ const EditStaffForm = ({
   };
 
   return (
+    <LocalizedContent>
     <form onSubmit={handleSubmit} className="space-y-6 py-4">
       {/* Profile Section */}
       <div className="flex items-center gap-4">
@@ -1541,6 +1543,7 @@ const EditStaffForm = ({
         </AlertDialogContent>
       </AlertDialog>
     </form>
+    </LocalizedContent>
   );
 };
 
@@ -1571,6 +1574,7 @@ const StaffTimestampDialog = ({
   const totalHours = timestamps.reduce((acc, curr) => acc + (Number(curr.hoursWorked) || 0), 0);
 
   return (
+    <LocalizedContent>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[95vw] sm:max-w-3xl max-h-[90vh] flex flex-col p-0 overflow-hidden rounded-2xl bg-white border border-gray-100 shadow-2xl">
         {/* Header */}
@@ -1715,6 +1719,7 @@ const StaffTimestampDialog = ({
         </div>
       </DialogContent>
     </Dialog>
+    </LocalizedContent>
   );
 };
 
@@ -1742,6 +1747,7 @@ const StaffCard = ({
       : 'bg-green-100 text-green-700';
 
   return (
+    <LocalizedContent>
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -1823,6 +1829,7 @@ const StaffCard = ({
         </div>
       </CardContent>
     </motion.div>
+    </LocalizedContent>
   );
 };
 

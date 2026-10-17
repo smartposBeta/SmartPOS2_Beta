@@ -935,6 +935,11 @@ export const dbService = {
       ? db.prepare('SELECT * FROM users WHERE role = ? AND tenant_id = ?').get('admin', tenantId)
       : db.prepare('SELECT * FROM users WHERE role = ?').get('admin');
   },
+  hasLocalAccount: () => {
+    return Boolean(
+      db.prepare("SELECT 1 FROM users WHERE role IN ('admin', 'owner', 'superuser') LIMIT 1").get()
+    );
+  },
   saveAdmin: (user: any) => {
     const effectiveTenantId = user.tenantId || user.tenant_id;
     const stmt = db.prepare(`
@@ -4095,8 +4100,11 @@ export const dbService = {
           try {
             const supabase = getSupabase();
             if (supabase) {
-              const { data: cloudUsers } = await supabase.from('users').select('id, tenant_id').eq('tenant_id', boundId);
-              const { data: cloudTenants } = await supabase.from('tenants').select('id').eq('id', boundId);
+              const [{ data: cloudUsers, error: usersError }, { data: cloudTenants, error: tenantsError }] = await Promise.all([
+                supabase.from('users').select('id, tenant_id').eq('tenant_id', boundId),
+                supabase.from('tenants').select('id').eq('id', boundId)
+              ]);
+              if (usersError || tenantsError) throw usersError || tenantsError;
               
               if ((!cloudUsers || cloudUsers.length === 0) && (!cloudTenants || cloudTenants.length === 0)) {
                 console.log(`[DEVICE UNBIND] Bound tenant ${boundId} was deleted in Supabase Cloud. Automatically unbinding device!`);
@@ -4108,21 +4116,8 @@ export const dbService = {
             console.warn('[DEVICE UNBIND CHECK] Failed to query Supabase cloud:', cloudErr);
           }
         }
-
-        const localAdmin = db.prepare('SELECT id FROM users WHERE tenant_id = ?').get(boundId);
-        if (!localAdmin) {
-          const anyAdmin = db.prepare('SELECT tenant_id FROM users WHERE role = ? LIMIT 1').get('admin') as any;
-          if (!anyAdmin) {
-            dbService.clearBoundTenantId();
-            return null;
-          }
-        }
         return boundId;
       }
-
-      // Check fallback first admin in local SQLite
-      const firstAdmin = db.prepare('SELECT tenant_id FROM users WHERE role = ? LIMIT 1').get('admin') as any;
-      if (firstAdmin && firstAdmin.tenant_id) return String(firstAdmin.tenant_id);
       return null;
     } catch {
       return null;

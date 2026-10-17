@@ -13,9 +13,11 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useToast } from '@/hooks/use-toast';
 import { NonInventoryProductService } from '@/lib/db';
+import ProductImage from '@/components/ProductImage';
 import type { NonInventoryProduct } from '@shared/schema';
 import BarcodeModal from './BarcodeModal';
 import BarcodePreview from './BarcodePreview';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 const nonInventorySchema = z.object({
   name: z.string().min(1, 'Product name is required'),
@@ -238,6 +240,7 @@ const NonInventoryProducts: React.FC = () => {
   });
 
   return (
+    <LocalizedContent>
     <div className="space-y-6">
       {/* Toolbar */}
       <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
@@ -308,13 +311,12 @@ const NonInventoryProducts: React.FC = () => {
               <Card className="overflow-hidden bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md transition-shadow">
                 <CardHeader className="p-4 flex flex-row items-center justify-between space-y-0">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-[#FF8882]/10 flex items-center justify-center">
-                      {product.image ? (
-                        <img src={product.image} className="w-full h-full rounded-full object-cover" />
-                      ) : (
-                        <Tag className="w-5 h-5 text-[#FF8882]" />
-                      )}
-                    </div>
+                    <ProductImage
+                      src={product.image}
+                      alt={product.name}
+                      className="w-10 h-10 rounded-full bg-[#FF8882]/10"
+                      iconClassName="w-5 h-5 text-[#FF8882]"
+                    />
                     <div>
                       <CardTitle className="text-base font-semibold dark:text-white">{product.name}</CardTitle>
                       <CardDescription className="text-xs dark:text-gray-400">{product.category}</CardDescription>
@@ -393,14 +395,12 @@ const NonInventoryProducts: React.FC = () => {
               <div className="flex justify-center mb-6">
                 <div className="relative group cursor-pointer" onClick={() => document.getElementById('non-inv-image')?.click()}>
                   <div className="w-24 h-24 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-600 flex flex-col items-center justify-center overflow-hidden transition-all group-hover:border-[#FF8882]">
-                    {productImage ? (
-                      <img src={productImage} className="w-full h-full object-cover" />
-                    ) : (
-                      <>
-                        <ImageIcon className="w-8 h-8 text-gray-400 mb-1" />
-                        <span className="text-[10px] text-gray-500 font-medium">Add Photo</span>
-                      </>
-                    )}
+                    <ProductImage
+                      src={productImage}
+                      alt="Product preview"
+                      className="h-full w-full"
+                      fallbackLabel="Add photo"
+                    />
                   </div>
                   <input
                     id="non-inv-image"
@@ -588,6 +588,7 @@ const NonInventoryProducts: React.FC = () => {
         </DialogContent>
       </Dialog>
     </div>
+    </LocalizedContent>
   );
 };
 

@@ -27,6 +27,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import api from '@/lib/api';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 type ReceiptSettings = {
   storeName: string;
@@ -120,6 +121,7 @@ const ExternalDeviceManager: React.FC = () => {
   }, [showReceiptConfig]);
 
   return (
+    <LocalizedContent>
     <div className="space-y-6">
       {/* Printer Setup Section */}
       <Card className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
@@ -553,6 +555,7 @@ const ExternalDeviceManager: React.FC = () => {
         </CardContent>
       </Card>
     </div>
+    </LocalizedContent>
   );
 };
 

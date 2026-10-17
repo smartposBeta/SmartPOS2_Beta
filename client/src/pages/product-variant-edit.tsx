@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Layout from '@/components/Layout';
+import ProductImage from '@/components/ProductImage';
 import { useLocation, useRoute } from 'wouter';
 import { 
   ArrowLeft, 
@@ -264,10 +265,12 @@ export default function ProductVariantEdit() {
                 >
                   {imagePreview ? (
                     <>
-                      <img
+                      <ProductImage
                         src={imagePreview}
                         alt="Variant preview"
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        className="h-full w-full"
+                        imageClassName="transition-transform duration-300 group-hover:scale-105"
+                        fallbackLabel="Image unavailable"
                       />
                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white gap-1.5 p-2">
                         <UploadCloud className="w-6 h-6" />

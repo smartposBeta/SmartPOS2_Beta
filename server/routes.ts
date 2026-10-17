@@ -87,6 +87,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log("=== REGISTERING TENANT ===");
       const { storeName, subdomain, username, password } = req.body;
       console.log("Data:", { storeName, subdomain, username });
+
+      const localBoundTenantId = await dbService.getBoundTenantId();
+      if (!localBoundTenantId && dbService.hasLocalAccount()) {
+        return res.status(409).json({
+          error: 'LOCAL_ACCOUNT_REQUIRES_BINDING',
+          message: 'Local admin data exists without an explicit device binding. Sign in to restore the binding before registering another store.'
+        });
+      }
       
       const supabase = getSupabase();
       if (!supabase) {
@@ -96,8 +104,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // STRICT CLOUD-FIRST DEVICE UNBIND & VERIFICATION:
       // Query Supabase Cloud for active tenants and admin users.
       try {
-        const { data: cloudTenants } = await supabase.from('tenants').select('id, subdomain, store_name');
-        const { data: cloudAdminUsers } = await supabase.from('users').select('id, username, tenant_id, role');
+        const [{ data: cloudTenants, error: tenantsError }, { data: cloudAdminUsers, error: usersError }] = await Promise.all([
+          supabase.from('tenants').select('id, subdomain, store_name'),
+          supabase.from('users').select('id, username, tenant_id, role')
+        ]);
+        if (tenantsError || usersError) throw tenantsError || usersError;
 
         const activeAdmins = (cloudAdminUsers || []).filter((u: any) => u.role === 'admin' || u.role === 'owner');
         const activeTenants = cloudTenants || [];
@@ -134,8 +145,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
       } catch (checkErr) {
-        console.warn('[CLOUD VERIFICATION WARNING] Verification check error, auto unbinding:', checkErr);
-        dbService.clearBoundTenantId();
+        console.warn('[CLOUD VERIFICATION WARNING] Registration blocked because device status could not be verified:', checkErr);
+        return res.status(503).json({
+          error: 'DEVICE_STATUS_UNVERIFIED',
+          message: 'The device account could not be verified with the cloud service. No local account data was changed; retry when the connection is available.'
+        });
       }
       
       // 1. Create tenant
@@ -211,39 +225,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const boundTenantId = await dbService.getBoundTenantId();
       if (!boundTenantId) {
+        const localAccountPresent = dbService.hasLocalAccount();
         return res.json({
           bound: false,
           tenant: null,
           admin: null,
-          message: 'Device is not bound to any account. Ready for new registration.'
+          identityVerified: false,
+          localAccountPresent,
+          message: localAccountPresent
+            ? 'No explicit device binding exists, but local account data is present. Account identity cannot be verified.'
+            : 'Device is not bound to any account. Ready for new registration.'
         });
       }
 
       let tenantInfo: any = null;
       let adminInfo: any = null;
-
-      const localAdmin = dbService.getAdmin(boundTenantId);
-      if (localAdmin) {
-        adminInfo = {
-          id: localAdmin.id,
-          username: localAdmin.username,
-          ownerName: localAdmin.ownerName || localAdmin.username,
-          businessName: localAdmin.businessName || null,
-          mobile: localAdmin.mobile || null,
-          email: localAdmin.email || null,
-          role: localAdmin.role || 'admin'
-        };
-      }
+      let identityVerified = false;
 
       if (useCloud()) {
         try {
           const supabase = getSupabase();
           if (supabase) {
-            const { data: cloudTenant } = await supabase
+            const [{ data: cloudTenant, error: tenantError }, { data: cloudAdmins, error: adminsError }] = await Promise.all([
+              supabase
               .from('tenants')
               .select('id, store_name, subdomain, created_at')
               .eq('id', boundTenantId)
-              .maybeSingle();
+              .maybeSingle(),
+              supabase
+                .from('users')
+                .select('id, username, owner_name, business_name, mobile, email, role')
+                .eq('tenant_id', boundTenantId)
+                .in('role', ['admin', 'owner', 'superuser'])
+            ]);
+            if (tenantError || adminsError) throw tenantError || adminsError;
 
             if (cloudTenant) {
               tenantInfo = {
@@ -254,14 +269,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
               };
             }
 
-            const { data: cloudAdmins } = await supabase
-              .from('users')
-              .select('id, username, owner_name, business_name, mobile, email, role')
-              .eq('tenant_id', boundTenantId)
-              .in('role', ['admin', 'owner', 'superuser']);
-
-            if (cloudAdmins && cloudAdmins.length > 0 && !adminInfo) {
-              const first = cloudAdmins[0];
+            if (cloudAdmins && cloudAdmins.length > 0) {
+              const first = cloudAdmins.find((user: any) => user.role === 'owner')
+                || cloudAdmins.find((user: any) => user.role === 'admin')
+                || cloudAdmins[0];
               adminInfo = {
                 id: first.id,
                 username: first.username,
@@ -272,26 +283,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 role: first.role || 'admin'
               };
             }
+            identityVerified = Boolean(tenantInfo || adminInfo);
           }
         } catch (cloudErr) {
-          console.warn('[DEVICE-STATUS] Cloud lookup failed, using local data only:', cloudErr);
+          console.warn('[DEVICE-STATUS] Cloud identity lookup failed:', cloudErr);
         }
-      }
-
-      if (!tenantInfo && localAdmin && (localAdmin.businessName || localAdmin.tenant_id)) {
-        tenantInfo = {
-          id: boundTenantId,
-          storeName: localAdmin.businessName || 'Registered Store',
-          subdomain: null,
-          createdAt: null
-        };
       }
 
       res.json({
         bound: true,
         tenant: tenantInfo,
         admin: adminInfo,
-        message: 'Device is currently bound to an existing account.'
+        identityVerified,
+        message: identityVerified
+          ? 'Device is bound to an account verified by its exact tenant ID.'
+          : 'Device is bound, but the account identity could not be verified. Cached account details are not shown.'
       });
     } catch (e: any) {
       console.error('[DEVICE-STATUS] Error:', e);
@@ -534,7 +540,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const existingLocalAdmin = dbService.getAdmin();
-      if (existingLocalAdmin && (!id || existingLocalAdmin.id !== id)) {
+      if (dbService.hasLocalAccount() && (!existingLocalAdmin || !id || existingLocalAdmin.id !== id)) {
         return res.status(409).json({
           error: 'An admin account already exists on this device. Unbind the device first before creating a new admin.',
           code: 'ADMIN_ALREADY_EXISTS'

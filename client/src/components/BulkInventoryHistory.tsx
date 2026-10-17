@@ -21,6 +21,7 @@ import { BulkInventoryService } from '@/lib/db';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 interface BulkInventoryHistoryProps {
   isOpen: boolean;
@@ -207,6 +208,7 @@ export const BulkInventoryHistory: React.FC<BulkInventoryHistoryProps> = ({
   if (!isOpen) return null;
 
   return (
+    <LocalizedContent>
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="max-w-5xl h-[90vh] flex flex-col p-0 overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
         {/* Header */}
@@ -562,5 +564,6 @@ export const BulkInventoryHistory: React.FC<BulkInventoryHistoryProps> = ({
         </Dialog>
       </DialogContent>
     </Dialog>
+    </LocalizedContent>
   );
 };

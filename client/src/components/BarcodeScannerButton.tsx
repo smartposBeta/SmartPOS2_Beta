@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import Scanner from './Scanner';
 import { useToast } from '@/hooks/use-toast';
+import { LocalizedContent } from '@/contexts/LanguageContext';
 
 interface BarcodeScannerButtonProps {
   onBarcodeScanned: (barcode: string) => void;
@@ -41,6 +42,7 @@ const BarcodeScannerButton: React.FC<BarcodeScannerButtonProps> = ({
   };
 
   return (
+    <LocalizedContent>
     <>
       <Button
         type="button"
@@ -90,6 +92,7 @@ const BarcodeScannerButton: React.FC<BarcodeScannerButtonProps> = ({
         </DialogContent>
       </Dialog>
     </>
+    </LocalizedContent>
   );
 };
 
