@@ -57,6 +57,7 @@ type DeviceStatus = {
   bound: boolean;
   identityVerified?: boolean;
   localAccountPresent?: boolean;
+  legacyBindingPresent?: boolean;
   tenant?: {
     id?: string;
     storeName?: string;
@@ -460,9 +461,7 @@ const ProfileSettings: React.FC = () => {
       setStatusLoading(true);
       setStatusError(null);
       setDeviceStatus(null);
-      const res = await fetch('/api/tenants/device-status', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`Device status request failed (${res.status})`);
-      const data = await res.json();
+      const data = await api.get('/api/tenants/device-status');
       if (typeof data?.bound !== 'boolean' || typeof data?.identityVerified !== 'boolean') {
         throw new Error('Device status response was incomplete or from an unsupported server version');
       }
@@ -657,10 +656,11 @@ const ProfileSettings: React.FC = () => {
                   statusLoading ? "Checking…" :
                   statusError ? "Status unavailable" :
                   deviceStatus?.bound ? (deviceStatus.identityVerified ? "Bound account verified" : "Bound · identity unavailable") :
+                  deviceStatus?.legacyBindingPresent ? "Legacy setup · not device-bound" :
                   deviceStatus?.localAccountPresent ? "Binding unknown · local account data" :
                   "No Account Linked"
                 }
-                color={deviceStatus?.bound || deviceStatus?.localAccountPresent || statusError ? "amber" : "teal"}
+                color={deviceStatus?.bound || deviceStatus?.legacyBindingPresent || deviceStatus?.localAccountPresent || statusError ? "amber" : "teal"}
                 onClick={() => setShowDeviceBindingDialog(true)}
               />
               <SettingsCard icon={HelpCircle} title="Help & Support" subtitle="Guides & Tutorials" color="blue" onClick={() => setShowHelpSupportDialog(true)} />
@@ -748,24 +748,30 @@ const ProfileSettings: React.FC = () => {
                     </Button>
                   </CardContent>
                 </Card>
-              ) : deviceStatus?.localAccountPresent && !deviceStatus.bound ? (
+              ) : (deviceStatus?.localAccountPresent || deviceStatus?.legacyBindingPresent) && !deviceStatus.bound ? (
                 <Card className="border-2 border-amber-500/40 bg-amber-50/60 rounded-3xl shadow-xl overflow-hidden">
                   <div className="bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-4">
                     <div className="flex items-center gap-3 text-white">
                       <AlertTriangle className="w-6 h-6" />
                       <div>
-                        <Badge className="mb-1 bg-white/20 text-white border-0 text-[9px] font-black uppercase tracking-widest">Binding unknown</Badge>
-                        <h3 className="text-base font-black tracking-tight">Local account data found</h3>
+                        <Badge className="mb-1 bg-white/20 text-white border-0 text-[9px] font-black uppercase tracking-widest">
+                          {deviceStatus.legacyBindingPresent ? 'Legacy setup' : 'Local cache'}
+                        </Badge>
+                        <h3 className="text-base font-black tracking-tight">
+                          {deviceStatus.legacyBindingPresent ? 'No binding for this device' : 'Local account data found'}
+                        </h3>
                       </div>
                     </div>
                   </div>
                   <CardContent className="p-5 space-y-3">
                     <p className="text-xs font-semibold leading-relaxed text-amber-900">
-                      No explicit binding is recorded. Local account data is not a verified store identity. Continue to secure setup to authenticate as its owner before clearing this device state.
+                      {deviceStatus.legacyBindingPresent
+                        ? 'A previous global setup has no device identity and does not block this device from creating a separate store. Verify its owner before resetting the legacy marker.'
+                        : 'Local account data is not proof of a server-side device binding. It does not block a new store setup.'}
                     </p>
-                    <Button variant="destructive" onClick={() => setLocation('/admin-signup')} className="w-full rounded-xl">
-                      <Unlock className="w-4 h-4 mr-2" />
-                      Verify owner & reset device
+                    <Button variant="outline" onClick={() => setLocation('/admin-signup')} className="w-full rounded-xl">
+                      {deviceStatus.legacyBindingPresent && <Unlock className="w-4 h-4 mr-2" />}
+                      {deviceStatus.legacyBindingPresent ? 'Review setup and owner reset' : 'Continue to account setup'}
                     </Button>
                     <Button variant="outline" onClick={checkDeviceStatus} className="w-full rounded-xl">
                       <RefreshCw className="w-3.5 h-3.5 mr-2" />

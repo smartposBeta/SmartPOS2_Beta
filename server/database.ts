@@ -350,7 +350,8 @@ export const dbService = {
         device_info TEXT,
         ip_address TEXT,
         created_at TEXT NOT NULL,
-        last_active_at TEXT NOT NULL
+        last_active_at TEXT NOT NULL,
+        device_id TEXT
       );
       CREATE TABLE IF NOT EXISTS customers (
         id TEXT PRIMARY KEY,
@@ -395,6 +396,14 @@ export const dbService = {
         value TEXT NOT NULL,
         tenant_id TEXT,
         PRIMARY KEY (key, tenant_id)
+      );
+      CREATE TABLE IF NOT EXISTS device_bindings (
+        device_id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'bound')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS non_inventory_products (
         id TEXT PRIMARY KEY,
@@ -498,6 +507,11 @@ export const dbService = {
       );
     `);
 
+    const sessionColumnNames = getCols('sessions').map(column => column.name);
+    if (!sessionColumnNames.includes('device_id')) {
+      sqlite.exec('ALTER TABLE sessions ADD COLUMN device_id TEXT');
+    }
+
     // Ensure tenant_id on all tables that should have it
     const tablesWantTenant = [
       'users', 'customers', 'credits', 'payments', 'reminders',
@@ -536,6 +550,8 @@ export const dbService = {
       CREATE INDEX IF NOT EXISTS idx_sale_items_saleId ON sale_items(saleId);
       CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
       CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_device ON sessions(device_id);
+      CREATE INDEX IF NOT EXISTS idx_device_bindings_tenant ON device_bindings(tenant_id);
       CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
       CREATE INDEX IF NOT EXISTS idx_credits_customer ON credits(customer_id);
       CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments(customer_id);
@@ -2592,12 +2608,12 @@ export const dbService = {
     return dbService.getStaffByStaffId(staffId, tenantId);
   },
 
-  createSession: (session: { id: string; user_id: string; token: string; tenant_id?: string; device_info: string; ip_address: string; created_at: string; last_active_at: string }) => {
+  createSession: (session: { id: string; user_id: string; token: string; tenant_id?: string; device_id?: string; device_info: string; ip_address: string; created_at: string; last_active_at: string }) => {
     db.prepare(`
-      INSERT INTO sessions (id, user_id, tenant_id, token, device_info, ip_address, created_at, last_active_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, user_id, tenant_id, token, device_info, ip_address, created_at, last_active_at, device_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      session.id, session.user_id, session.tenant_id || null, session.token, session.device_info, session.ip_address, session.created_at, session.last_active_at
+      session.id, session.user_id, session.tenant_id || null, session.token, session.device_info, session.ip_address, session.created_at, session.last_active_at, session.device_id || null
     );
     return session;
   },
@@ -4089,66 +4105,114 @@ export const dbService = {
     return { success: true, message: 'All data pulled from Supabase', duration_ms: _pullDur };
   },
 
-  getBoundTenantId: async (): Promise<string | null> => {
+  getLegacyBoundTenantId: (): string | null => {
     const row = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id IS NULL')
       .get('device_bound_tenant_id') as any;
     return row?.value ? String(row.value) : null;
   },
 
-  isDeviceSetupResetReady: () => {
-    const resetMarker = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id IS NULL LIMIT 1')
-      .get('device_setup_reset_ready') as any;
-    const resetTenantId = String(resetMarker?.value || '');
-    if (!resetTenantId) return false;
-    const hasLocalAdmin = Boolean(db.prepare(`
-      SELECT 1 FROM users
-      WHERE LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser')
-      LIMIT 1
-    `).get());
-    return !hasLocalAdmin;
+  getDeviceBinding: (deviceId: string) => {
+    return db.prepare('SELECT device_id, tenant_id, account_id, status FROM device_bindings WHERE device_id = ?')
+      .get(deviceId) as { device_id: string; tenant_id: string; account_id: string; status: 'pending' | 'bound' } | undefined;
   },
 
-  clearBoundTenantId: (expectedBoundTenantId: string | null, tenantId: string, ownerUserId: string) => {
-    if (!tenantId || !ownerUserId) throw new Error('A verified tenant and owner are required to reset the device');
+  reserveDeviceRegistration: (deviceId: string, tenantId: string, accountId: string): boolean => {
+    const now = new Date().toISOString();
+    const reserve = db.transaction(() => {
+      if (dbService.getDeviceBinding(deviceId)) return false;
+      db.prepare(`
+        INSERT INTO device_bindings (device_id, tenant_id, account_id, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'pending', ?, ?)
+      `).run(deviceId, tenantId, accountId, now, now);
+      return true;
+    });
+    return reserve.immediate();
+  },
+
+  releaseDeviceRegistration: (deviceId: string, tenantId: string, accountId: string) => {
+    return db.prepare(`
+      DELETE FROM device_bindings
+      WHERE device_id = ? AND tenant_id = ? AND account_id = ? AND status = 'pending'
+    `).run(deviceId, tenantId, accountId);
+  },
+
+  bindDeviceToTenant: (deviceId: string, tenantId: string, accountId: string) => {
+    const now = new Date().toISOString();
+    const bind = db.transaction(() => {
+      const existing = dbService.getDeviceBinding(deviceId);
+      if (existing) {
+        if (existing.tenant_id !== tenantId) {
+          throw new Error('This browser is already linked to a different store. Reset it with the current store owner before switching accounts.');
+        }
+        if (existing.status === 'pending') {
+          if (existing.account_id !== accountId) {
+            throw new Error('A registration is already in progress for this browser. Sign in to its store owner account or contact support.');
+          }
+          db.prepare("UPDATE device_bindings SET status = 'bound', updated_at = ? WHERE device_id = ?")
+            .run(now, deviceId);
+        }
+        return;
+      }
+
+      db.prepare(`
+        INSERT INTO device_bindings (device_id, tenant_id, account_id, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'bound', ?, ?)
+      `).run(deviceId, tenantId, accountId, now, now);
+    });
+    bind.immediate();
+  },
+
+  clearDeviceBinding: (deviceId: string, expectedTenantId: string, ownerUserId: string) => {
+    if (!deviceId || !expectedTenantId || !ownerUserId) {
+      throw new Error('A verified device, tenant, and store owner are required to reset this device');
+    }
 
     const reset = db.transaction(() => {
-      const current = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id IS NULL')
-        .get('device_bound_tenant_id') as any;
-      const currentBoundTenantId = current?.value ? String(current.value) : null;
-      if (currentBoundTenantId !== expectedBoundTenantId || (currentBoundTenantId && currentBoundTenantId !== tenantId)) {
+      const binding = dbService.getDeviceBinding(deviceId);
+      if (!binding || binding.tenant_id !== expectedTenantId) {
         throw new Error('Device binding changed during reset verification. Refresh status and retry.');
       }
 
-      if (!currentBoundTenantId) {
-        const owner = db.prepare(`
-          SELECT id FROM users
-          WHERE id = ? AND tenant_id = ? AND LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser')
-        `).get(ownerUserId, tenantId);
-        if (!owner) throw new Error('The verified owner account is no longer present on this device');
-      }
-
-      db.prepare('DELETE FROM sessions WHERE tenant_id = ?').run(tenantId);
-      db.prepare(`
-        DELETE FROM users
-        WHERE tenant_id = ?
-          AND LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser')
-      `).run(tenantId);
-      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_bound_tenant_id');
-      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_setup_reset_ready');
-      db.prepare('INSERT INTO settings (key, value, tenant_id) VALUES (?, ?, NULL)')
-        .run('device_setup_reset_ready', tenantId);
-
-      return { tenantId, accountId: ownerUserId };
+      db.prepare('DELETE FROM sessions WHERE device_id = ?').run(deviceId);
+      db.prepare('DELETE FROM device_bindings WHERE device_id = ? AND tenant_id = ?')
+        .run(deviceId, expectedTenantId);
+      return { tenantId: expectedTenantId, accountId: ownerUserId };
     });
 
-    return reset();
+    return reset.immediate();
   },
 
-  commitAdminRegistration: (userData: any, session: {
+  clearLegacyDeviceBinding: (expectedTenantId: string, ownerUserId: string, sessionToken?: string) => {
+    if (!expectedTenantId || !ownerUserId) {
+      throw new Error('A verified legacy store owner is required to reset this device');
+    }
+
+    const reset = db.transaction(() => {
+      const current = dbService.getLegacyBoundTenantId();
+      if (current !== expectedTenantId) {
+        throw new Error('The legacy device binding changed during reset verification. Refresh status and retry.');
+      }
+
+      if (sessionToken) {
+        db.prepare('DELETE FROM sessions WHERE token = ? AND tenant_id = ?')
+          .run(sessionToken, expectedTenantId);
+      }
+      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL')
+        .run('device_bound_tenant_id');
+      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL')
+        .run('device_setup_reset_ready');
+      return { tenantId: expectedTenantId, accountId: ownerUserId };
+    });
+
+    return reset.immediate();
+  },
+
+  commitAdminRegistration: (deviceId: string, userData: any, session: {
     id: string;
     user_id: string;
     token: string;
     tenant_id: string;
+    device_id: string;
     device_info: string;
     ip_address: string;
     created_at: string;
@@ -4158,13 +4222,14 @@ export const dbService = {
     if (!tenantId) throw new Error('A tenant ID is required to create an admin account');
 
     const commit = db.transaction(() => {
-      const hasAdmin = Boolean(db.prepare(
-        "SELECT 1 FROM users WHERE LOWER(COALESCE(role, '')) IN ('admin', 'owner', 'superuser') LIMIT 1"
-      ).get());
-      const bound = db.prepare('SELECT value FROM settings WHERE key = ? AND tenant_id IS NULL')
-        .get('device_bound_tenant_id') as any;
-      if ((hasAdmin || bound?.value) && !dbService.isDeviceSetupResetReady()) {
-        throw new Error('An admin account already exists on this device. Verify its owner credentials and reset first.');
+      const reservation = dbService.getDeviceBinding(deviceId);
+      if (
+        !reservation
+        || reservation.status !== 'pending'
+        || reservation.tenant_id !== tenantId
+        || reservation.account_id !== String(userData.id)
+      ) {
+        throw new Error('The device registration reservation is missing or no longer valid. Retry account setup.');
       }
 
       db.prepare(`
@@ -4183,13 +4248,11 @@ export const dbService = {
         userData.profileImage || null,
         userData.createdAt || new Date().toISOString()
       );
-      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_setup_reset_ready');
-      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_bound_tenant_id');
-      db.prepare('INSERT INTO settings (key, value, tenant_id) VALUES (?, ?, NULL)')
-        .run('device_bound_tenant_id', tenantId);
+      db.prepare("UPDATE device_bindings SET status = 'bound', updated_at = ? WHERE device_id = ?")
+        .run(new Date().toISOString(), deviceId);
       db.prepare(`
-        INSERT INTO sessions (id, user_id, tenant_id, token, device_info, ip_address, created_at, last_active_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (id, user_id, tenant_id, token, device_info, ip_address, created_at, last_active_at, device_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         session.id,
         session.user_id,
@@ -4198,11 +4261,12 @@ export const dbService = {
         session.device_info,
         session.ip_address,
         session.created_at,
-        session.last_active_at
+        session.last_active_at,
+        deviceId
       );
     });
 
-    commit();
+    commit.immediate();
   },
 
   getLocalAdminAccounts: () => db.prepare(`
@@ -4742,16 +4806,6 @@ export const dbService = {
     };
   },
 
-  setBoundTenantId: (tenantId: string) => {
-    const bind = db.transaction(() => {
-      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_setup_reset_ready');
-      db.prepare('DELETE FROM settings WHERE key = ? AND tenant_id IS NULL').run('device_bound_tenant_id');
-      db.prepare('INSERT INTO settings (key, value, tenant_id) VALUES (?, ?, NULL)')
-        .run('device_bound_tenant_id', tenantId);
-    });
-    bind();
-    console.log(`[DEVICE LOCK] System bound to tenant_id: ${tenantId}`);
-  }
 };
 
 export default dbService;

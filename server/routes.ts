@@ -20,6 +20,12 @@ import { getSupabase } from "./supabase";
 import { DeveloperService } from "./developer-service";
 
 const adminRoles = new Set(['admin', 'owner', 'superuser']);
+const DEVICE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const getRequestDeviceId = (req: Request): string | null => {
+  const header = req.headers['x-device-id'];
+  return typeof header === 'string' && DEVICE_ID_PATTERN.test(header) ? header.toLowerCase() : null;
+};
 
 const adminIdentifierMatches = (admin: any, identifier: string) => {
   const input = String(identifier || '').trim();
@@ -73,7 +79,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization", "X-Tenant-ID"]
+    allowedHeaders: ["Content-Type", "Authorization", "X-Tenant-ID", "X-Device-ID"]
   }));
   app.use(express.json());
 
@@ -113,20 +119,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   app.get('/api/tenants/device-status', async (req: Request, res: Response) => {
     try {
-      const boundTenantId = await dbService.getBoundTenantId();
-      if (!boundTenantId) {
-        const deviceResetReady = dbService.isDeviceSetupResetReady();
-        const localAccountPresent = !deviceResetReady && dbService.hasLocalAccount();
+      res.set('Cache-Control', 'no-store');
+      const deviceId = getRequestDeviceId(req);
+      if (!deviceId) {
+        return res.status(400).json({ error: 'A valid browser device ID is required to check account setup status.' });
+      }
+
+      const binding = dbService.getDeviceBinding(deviceId);
+      if (!binding) {
+        const legacyBindingPresent = Boolean(dbService.getLegacyBoundTenantId());
         return res.json({
           bound: false,
           tenant: null,
           admin: null,
           identityVerified: false,
-          localAccountPresent,
-          deviceResetReady,
-          message: localAccountPresent
-            ? 'No explicit device binding exists, but local account data is present. Account identity cannot be verified.'
-            : 'Device is not bound to any account. Ready for new registration.'
+          localAccountPresent: false,
+          deviceResetReady: true,
+          legacyBindingPresent,
+          message: legacyBindingPresent
+            ? 'This browser has no device-specific account binding. Legacy server account data is retained and does not block new device registration.'
+            : 'This browser is not bound to an account. Ready for new registration.'
+        });
+      }
+
+      const boundTenantId = binding.tenant_id;
+      if (binding.status === 'pending') {
+        return res.json({
+          bound: true,
+          bindingStatus: 'pending',
+          tenant: null,
+          admin: null,
+          identityVerified: false,
+          localAccountPresent: false,
+          deviceResetReady: false,
+          message: 'Account setup for this browser is still pending. Sign in to the account being created or contact support before retrying.'
         });
       }
 
@@ -180,6 +206,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({
         bound: true,
+        bindingStatus: 'bound',
         tenant: tenantInfo,
         admin: adminInfo,
         identityVerified,
@@ -197,13 +224,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/tenants/unbind-device', async (req: Request, res: Response) => {
     try {
+      const deviceId = getRequestDeviceId(req);
+      if (!deviceId) {
+        return res.status(400).json({ error: 'A valid browser device ID is required to reset account setup.' });
+      }
+
       const username = String(req.body?.adminUsername || '').trim();
       const password = String(req.body?.adminPassword || '');
       if (!username || !password) {
         return res.status(401).json({ error: 'The current store owner username and password are required.' });
       }
 
-      const boundTenantId = await dbService.getBoundTenantId();
+      const binding = dbService.getDeviceBinding(deviceId);
+      const legacyTenantId = binding ? null : dbService.getLegacyBoundTenantId();
+      const boundTenantId = binding?.tenant_id || legacyTenantId;
+      if (!boundTenantId) {
+        return res.status(409).json({ error: 'This browser has no server-side account binding to reset.' });
+      }
       let verifiedOwner: any = null;
       if (boundTenantId && useCloud()) {
         const supabase = getSupabase();
@@ -248,10 +285,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: 'The verified account is not the account currently associated with this device.' });
       }
 
-      const resetScope = dbService.clearBoundTenantId(boundTenantId, tenantId, accountId);
+      const resetScope = binding
+        ? dbService.clearDeviceBinding(deviceId, boundTenantId, accountId)
+        : dbService.clearLegacyDeviceBinding(
+          boundTenantId,
+          accountId,
+          String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+        );
       return res.json({
         success: true,
-        message: 'Device binding and its local session were reset. Cloud account and cloud data were not deleted.',
+        message: 'Device binding was reset. Cloud account and shared tenant data were not deleted.',
         clientPurge: {
           tenantId: resetScope.tenantId,
           accountId: resetScope.accountId,
@@ -458,9 +501,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     let cloudClient: any = null;
     let cloudTenantCreated = false;
     let cloudUserCreated = false;
+    let deviceReserved = false;
+    let registrationCommitted = false;
+    let rollbackComplete = true;
     let finalTenantId = '';
     let userId = '';
     try {
+      const deviceId = getRequestDeviceId(req);
+      if (!deviceId) {
+        return res.status(400).json({ error: 'A valid browser device ID is required to create an account.' });
+      }
+
       const { username, password, businessName, ownerName, mobile, email } = req.body || {};
       const cleanUsername = String(username || mobile || '').trim();
       const rawPassword = String(password || '');
@@ -469,11 +520,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: 'Username/mobile and password are required' });
       }
 
-      const setupResetReady = dbService.isDeviceSetupResetReady();
-      if ((await dbService.getBoundTenantId() || dbService.hasLocalAccount()) && !setupResetReady) {
+      if (dbService.getDeviceBinding(deviceId)) {
         return res.status(409).json({
-          error: 'An account or device binding already exists. Verify its owner credentials and reset first.',
-          code: 'ADMIN_ALREADY_EXISTS'
+          error: 'This browser is already linked to a store. Sign in to that account or reset this device with the store owner.',
+          code: 'DEVICE_ALREADY_BOUND'
         });
       }
 
@@ -517,7 +567,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             code: 'ADMIN_ALREADY_EXISTS_IN_CLOUD'
           });
         }
+      }
 
+      deviceReserved = dbService.reserveDeviceRegistration(deviceId, finalTenantId, userId);
+      if (!deviceReserved) {
+        return res.status(409).json({
+          error: 'Another account setup has already started on this browser. Refresh status or sign in to the account being created.',
+          code: 'DEVICE_REGISTRATION_IN_PROGRESS'
+        });
+      }
+
+      if (useCloud()) {
         const storeSlug = String(businessName || cleanUsername).toLowerCase().replace(/[^a-z0-9]/g, '') || 'store';
         const subdomain = `${storeSlug}-${userId.slice(0, 8)}`;
         cloudTenantCreated = true;
@@ -546,13 +606,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         user_id: userId,
         token,
         tenant_id: finalTenantId,
+        device_id: deviceId,
         device_info: req.headers['user-agent'] || 'Unknown Device',
         ip_address: req.ip || req.socket.remoteAddress || 'Unknown',
         created_at: now,
         last_active_at: now
       };
       try {
-        dbService.commitAdminRegistration(userData, session);
+        dbService.commitAdminRegistration(deviceId, userData, session);
+        registrationCommitted = true;
       } catch (commitError) {
         throw commitError;
       }
@@ -564,7 +626,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         token
       });
     } catch (err: any) {
-      let rollbackComplete = true;
       try {
         if (cloudUserCreated && cloudClient) {
           const { error } = await cloudClient.from('users').delete().eq('id', userId).eq('tenant_id', finalTenantId);
@@ -577,10 +638,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch {
         rollbackComplete = false;
       }
+      if (deviceReserved && !registrationCommitted && rollbackComplete) {
+        try {
+          dbService.releaseDeviceRegistration(getRequestDeviceId(req) || '', finalTenantId, userId);
+        } catch (releaseError) {
+          rollbackComplete = false;
+          console.error('[REGISTER ADMIN] Failed to release device registration reservation:', releaseError);
+        }
+      }
       console.error('[REGISTER ADMIN ERROR]:', err?.message || String(err));
       if (!rollbackComplete) {
         return res.status(500).json({
-          error: 'Account setup failed and cloud rollback could not be confirmed. Contact support before retrying.'
+          error: 'Account setup failed and cleanup could not be confirmed. Contact support before retrying.'
         });
       }
       return res.status(500).json({ error: err?.message || 'Failed to register admin. No success was reported.' });
@@ -774,16 +843,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         resolvedTenantId = dbService.getDefaultOrOnlyTenantId() || 'default-tenant-id';
       }
 
-      // 6. Synchronize Device Lock
-      dbService.setBoundTenantId(resolvedTenantId);
+      const deviceId = getRequestDeviceId(req);
+      if (req.headers['x-device-id'] && !deviceId) {
+        return res.status(400).json({ error: 'The browser device ID is invalid. Refresh the page and try again.' });
+      }
+      if (deviceId && resolvedTenantId !== 'default-tenant-id') {
+        try {
+          dbService.bindDeviceToTenant(deviceId, resolvedTenantId, String(admin.id));
+        } catch (bindingError) {
+          return res.status(409).json({
+            error: bindingError instanceof Error ? bindingError.message : 'This browser is linked to a different store.',
+            code: 'DEVICE_ALREADY_BOUND'
+          });
+        }
+      }
 
-      // 7. Create Session
+      // Create Session
       const token = randomUUID();
       const session = {
         id: randomUUID(),
         user_id: admin.id,
         token,
         tenant_id: resolvedTenantId,
+        device_id: deviceId || undefined,
         device_info: req.headers['user-agent'] || 'Unknown Device',
         ip_address: req.ip || req.socket.remoteAddress || 'Unknown',
         created_at: new Date().toISOString(),
@@ -907,12 +989,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ?? dbService.getDefaultOrOnlyTenantId()
         ?? 'default-tenant-id';
 
+      const deviceId = getRequestDeviceId(req);
+      if (req.headers['x-device-id'] && !deviceId) {
+        return res.status(400).json({ error: 'The browser device ID is invalid. Refresh the page and try again.' });
+      }
+      if (deviceId && sessionTenantId !== 'default-tenant-id') {
+        try {
+          dbService.bindDeviceToTenant(deviceId, sessionTenantId, String(staff.id));
+        } catch (bindingError) {
+          return res.status(409).json({
+            error: bindingError instanceof Error ? bindingError.message : 'This browser is linked to a different store.',
+            code: 'DEVICE_ALREADY_BOUND'
+          });
+        }
+      }
+
       const token = randomUUID();
       const session = {
         id: randomUUID(),
         user_id: staff.id,
         token,
         tenant_id: sessionTenantId,
+        device_id: deviceId || undefined,
         device_info: deviceInfo || 'Unknown Device',
         ip_address: req.ip || req.socket.remoteAddress || 'Unknown',
         created_at: new Date().toISOString(),
@@ -997,12 +1095,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const ok = await bcrypt.compare(passkey, String(data.passhash || ''));
       if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+      const deviceId = getRequestDeviceId(req);
+      if (req.headers['x-device-id'] && !deviceId) {
+        return res.status(400).json({ error: 'The browser device ID is invalid. Refresh the page and try again.' });
+      }
+      if (deviceId) {
+        try {
+          dbService.bindDeviceToTenant(deviceId, resolvedTenantId, String(data.id));
+        } catch (bindingError) {
+          return res.status(409).json({
+            error: bindingError instanceof Error ? bindingError.message : 'This browser is linked to a different store.',
+            code: 'DEVICE_ALREADY_BOUND'
+          });
+        }
+      }
       const token = randomUUID();
       const session = {
         id: randomUUID(),
         user_id: String(data.id),
         token,
         tenant_id: resolvedTenantId,
+        device_id: deviceId || undefined,
         device_info: deviceInfo || 'Unknown Device',
         ip_address: req.ip || req.socket.remoteAddress || 'Unknown',
         created_at: new Date().toISOString(),

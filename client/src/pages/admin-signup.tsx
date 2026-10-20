@@ -31,6 +31,7 @@ type DeviceStatus = {
   localAccountPresent?: boolean;
   serverLocalAccountPresent?: boolean;
   deviceResetReady?: boolean;
+  legacyBindingPresent?: boolean;
   tenant?: {
     id: string;
     storeName?: string;
@@ -87,13 +88,13 @@ const AdminSignup: React.FC = () => {
         admin: identityVerified ? response.admin : null,
       };
       setDeviceStatus(data);
-      if (data.bound || data.localAccountPresent) {
+      if (data.bound) {
         setIsLocked(true);
       } else {
         setIsLocked(false);
-        setResetCleanupScope(null);
+        if (!data.localAccountPresent) setResetCleanupScope(null);
       }
-      return !data.bound && !data.localAccountPresent;
+      return !data.bound;
     } catch (e) {
       console.warn('Failed to verify device binding status:', e);
       setIsLocked(true);
@@ -113,6 +114,7 @@ const AdminSignup: React.FC = () => {
     try {
       if (
         !deviceStatus?.bound
+        && !deviceStatus?.legacyBindingPresent
         && !deviceStatus?.serverLocalAccountPresent
         && deviceStatus?.localAccountPresent
       ) {
@@ -237,33 +239,36 @@ const AdminSignup: React.FC = () => {
     }
   };
 
-  if (statusLoading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6">
-        <div className="animate-pulse space-y-4 text-center">
-          <Loader2 className="w-12 h-12 text-[#FF8882] animate-spin mx-auto" />
-          <p className="text-sm text-gray-500 font-medium">Checking device binding status…</p>
-        </div>
-      </div>
-    );
-  }
-
   if (statusError) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
-        <Card className="max-w-md w-full rounded-2xl border-amber-200 p-6 text-center space-y-4">
-          <AlertTriangle className="w-10 h-10 mx-auto text-amber-500" />
-          <h2 className="text-lg font-bold text-gray-900">Binding status unavailable</h2>
-          <p className="text-sm text-gray-600">{statusError}</p>
+      <main className="min-h-screen bg-[#f5f7f3] px-5 py-10 flex items-center justify-center">
+        <Card className="w-full max-w-md rounded-2xl border border-[#e4d8bd] bg-white p-7 shadow-[0_18px_55px_rgba(29,54,42,0.08)] sm:p-8">
+          <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-[#fbf3e3] text-[#94651b]">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <h1 className="text-xl font-semibold tracking-tight text-[#263b30]">We couldn’t verify this device</h1>
+          <p className="mt-2 text-sm leading-6 text-[#66756b]">{statusError}</p>
+          <p className="mt-3 text-xs leading-5 text-[#7b877e]">Account creation stays unavailable until the status check succeeds.</p>
+          <div className="mt-6 space-y-3">
           {resetCleanupScope && (
-            <Button onClick={retryLocalCleanup} disabled={unbindLoading} variant="outline" className="w-full rounded-xl">
-              {unbindLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+            <Button onClick={retryLocalCleanup} disabled={unbindLoading} variant="outline" className="h-11 w-full rounded-xl border-[#cbd9ce] text-[#285b45] hover:bg-[#f3f7f3]">
+              {unbindLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Retry local cleanup
             </Button>
           )}
-          <Button onClick={checkDeviceStatus} className="w-full rounded-xl">Retry status check</Button>
+          <Button onClick={checkDeviceStatus} className="h-11 w-full rounded-xl bg-[#21634a] font-semibold text-white hover:bg-[#194d39]">Retry status check</Button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setLocation('/role-selection')}
+            data-testid="button-back"
+            className="mx-auto mt-5 inline-flex items-center text-sm font-medium text-[#66756b] transition-colors hover:text-[#21634a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#21634a] focus-visible:ring-offset-2"
+          >
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to role selection
+          </button>
         </Card>
-      </div>
+      </main>
     );
   }
 
@@ -281,95 +286,95 @@ const AdminSignup: React.FC = () => {
 
     return (
       <>
-        <div className="min-h-screen bg-gradient-to-br from-slate-50 via-rose-50 to-amber-50 flex flex-col items-center justify-center p-4 sm:p-6 text-center">
+        <main className="min-h-screen bg-[#f5f7f3] px-4 py-8 text-center sm:px-6 sm:py-12">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
-            className="w-full max-w-lg"
+            className="mx-auto w-full max-w-xl"
           >
-            <div className="mb-6">
-              <div className="w-24 h-24 bg-gradient-to-br from-amber-100 to-rose-100 rounded-[2rem] flex items-center justify-center mb-5 mx-auto shadow-xl shadow-rose-100/60 border-4 border-white">
-                <Lock className="w-12 h-12 text-rose-500" />
+            <div className="mb-7">
+              <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-[#dfe8df] bg-white text-[#21634a] shadow-sm">
+                <Lock className="h-6 w-6" />
               </div>
-              <div className="flex items-center justify-center gap-2 mb-3">
-                <Badge variant="destructive" className="px-4 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] rounded-full bg-rose-500/90 border-0 shadow-lg shadow-rose-200">
-                  <AlertTriangle className="w-3 h-3 mr-1.5" /> {hasConfirmedBinding ? 'Device Bound' : 'Local Account Found'}
+              <div className="mb-3 flex items-center justify-center gap-2">
+                <Badge variant="outline" className={`rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${hasConfirmedBinding ? 'border-[#c6d9cc] bg-[#eaf2eb] text-[#285b45]' : 'border-[#e4d8bd] bg-[#fbf3e3] text-[#80591c]'}`}>
+                  {hasConfirmedBinding ? 'Device binding confirmed' : 'Browser data only'}
                 </Badge>
               </div>
-              <h2 className="text-3xl font-black text-gray-900 tracking-tight mb-2">
-                {hasConfirmedBinding ? 'Device Already Registered' : 'Account Setup Needs Attention'}
-              </h2>
-              <p className="text-sm text-gray-500 font-medium max-w-sm mx-auto leading-relaxed">
-                {hasConfirmedBinding ? 'This terminal is linked to an existing account.' : 'A local admin account exists, but no device binding is recorded.'}
+              <h1 className="mb-2 text-2xl font-semibold tracking-tight text-[#263b30] sm:text-3xl">
+                {hasConfirmedBinding ? 'This device is already set up' : 'Cached account data found'}
+              </h1>
+              <p className="mx-auto max-w-md text-sm leading-6 text-[#66756b]">
+                {hasConfirmedBinding ? 'This device is linked to an existing account.' : 'This browser has local account data, but the device status does not confirm a server-side binding.'}
                 {hasConfirmedBinding
                   ? identityVerified ? ' Verified account details are shown below.' : ' The account identity could not be verified, so cached details are hidden.'
-                  : ' This local data is not shown as a verified store. Authenticate as its owner to clear the stale device account state.'}
+                  : ' The cached details below are not a verified store identity.'}
               </p>
             </div>
 
-            <Card className="mb-6 border-2 border-rose-100 bg-white/90 backdrop-blur-sm rounded-[2rem] shadow-2xl shadow-rose-100/50 overflow-hidden">
-              <div className="bg-gradient-to-r from-rose-500 via-pink-500 to-amber-500 px-6 py-5">
-                <div className="flex items-center gap-3 text-white">
-                  <div className="w-12 h-12 bg-white/20 backdrop-blur rounded-2xl flex items-center justify-center border border-white/30">
+            <Card className="mb-6 overflow-hidden rounded-2xl border border-[#dce5dc] bg-white text-left shadow-[0_18px_55px_rgba(29,54,42,0.08)]">
+              <div className="border-b border-[#e5ece5] bg-[#f7faf6] px-5 py-4 sm:px-6">
+                <div className="flex items-center gap-3 text-[#263b30]">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#eaf2eb] text-[#21634a]">
                     <Building2 className="w-6 h-6" />
                   </div>
                   <div className="text-left flex-1">
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/80 mb-0.5">
+                    <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#748278]">
                       {identityVerified ? 'Verified Store' : hasConfirmedBinding ? 'Device Binding' : 'Local Account Data'}
                     </p>
-                    <h3 className="text-xl font-black tracking-tight">{storeName}</h3>
+                    <h2 className="text-lg font-semibold tracking-tight text-[#263b30]">{storeName}</h2>
                     {subdomain && (
-                      <p className="text-xs font-semibold text-white/80 mt-0.5">
-                        <span className="bg-white/20 px-2 py-0.5 rounded-md font-mono">{subdomain}.smartpos</span>
+                      <p className="mt-1 text-xs font-medium text-[#66756b]">
+                        <span className="rounded-md bg-white px-2 py-0.5 font-mono">{subdomain}.smartpos</span>
                       </p>
                     )}
                   </div>
-                  <CheckCircle2 className="w-7 h-7 text-white/90" />
+                  {hasConfirmedBinding && <CheckCircle2 className="h-5 w-5 shrink-0 text-[#397957]" />}
                 </div>
               </div>
 
-              <CardContent className="p-5 space-y-3 text-left">
+              <CardContent className="space-y-3 p-5 sm:p-6">
                 {identityVerified ? (
                   <div className="space-y-3">
                     {deviceStatus?.admin && (
                       <>
-                        <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
-                          <div className="w-10 h-10 bg-blue-50 text-blue-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                        <div className="flex items-center gap-3 rounded-xl border border-[#e5ece5] bg-[#fbfcfa] p-3.5">
+                          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#eaf2eb] text-[#397957]">
                             <UserIcon className="w-5 h-5" />
                           </div>
                           <div className="flex-1 min-w-0">
-                            <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Bound Account User</p>
-                            <p className="text-sm font-bold text-gray-900 truncate">{ownerName || 'Owner details unavailable'}</p>
+                            <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[#748278]">Bound Account User</p>
+                            <p className="truncate text-sm font-semibold text-[#263b30]">{ownerName || 'Owner details unavailable'}</p>
                             {adminUsername && adminUsername !== ownerName && (
                               <p className="text-[11px] font-medium text-gray-500">@{adminUsername}</p>
                             )}
                           </div>
-                          <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest border-amber-200 bg-amber-50 text-amber-700 rounded-full px-2.5 py-0.5">
+                          <Badge variant="outline" className="rounded-full border-[#dce5dc] bg-white px-2.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[#66756b]">
                             {deviceStatus.admin.role || 'Admin'}
                           </Badge>
                         </div>
 
                         {adminMobile && (
-                          <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
-                            <div className="w-10 h-10 bg-emerald-50 text-emerald-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                          <div className="flex items-center gap-3 rounded-xl border border-[#e5ece5] bg-[#fbfcfa] p-3.5">
+                            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#eaf2eb] text-[#397957]">
                               <Smartphone className="w-5 h-5" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Contact Number</p>
-                              <p className="text-sm font-bold text-gray-900 truncate">{adminMobile}</p>
+                              <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[#748278]">Contact Number</p>
+                              <p className="truncate text-sm font-semibold text-[#263b30]">{adminMobile}</p>
                             </div>
                           </div>
                         )}
 
                         {adminEmail && (
-                          <div className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-2xl border border-gray-100">
-                            <div className="w-10 h-10 bg-purple-50 text-purple-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                          <div className="flex items-center gap-3 rounded-xl border border-[#e5ece5] bg-[#fbfcfa] p-3.5">
+                            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#eaf2eb] text-[#397957]">
                               <Mail className="w-5 h-5" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Email Address</p>
-                              <p className="text-sm font-bold text-gray-900 truncate">{adminEmail}</p>
+                              <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[#748278]">Email Address</p>
+                              <p className="truncate text-sm font-semibold text-[#263b30]">{adminEmail}</p>
                             </div>
                           </div>
                         )}
@@ -377,18 +382,18 @@ const AdminSignup: React.FC = () => {
                     )}
                   </div>
                 ) : (
-                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-[11px] font-semibold text-amber-800">
+                  <div className="rounded-xl border border-[#e4d8bd] bg-[#fbf7ed] p-3.5 text-xs font-medium leading-5 text-[#725727]">
                     {hasConfirmedBinding
                       ? 'The device is bound, but its account details are not available for verification. Refresh status before relying on an account name or owner.'
-                      : 'Local account data exists without an explicit device binding. Sign in to restore the binding before setting up another account.'}
+                      : 'Local browser account data is not proof that this device is bound to a server account.'}
                   </div>
                 )}
 
                 {(hasConfirmedBinding || deviceStatus?.localAccountPresent) && <div className="mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl">
                   <div className="flex items-start gap-2.5">
-                    <AlertTriangle className="w-4.5 h-4.5 text-amber-600 flex-shrink-0 mt-0.5" />
-                    <p className="text-[11px] font-semibold text-amber-800 leading-relaxed">
-                      Reset removes this account’s device binding, local server session, and matching browser cache. It does not delete the cloud account, cloud inventory, or unrelated tenant records. Copies may remain in backups or other storage.
+                    <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-[#94651b]" />
+                    <p className="text-xs font-medium leading-5 text-[#725727]">
+                      Reset clears this browser’s device binding and matching browser cache. A matching local server session is revoked when available; the cloud account and shared tenant data are not deleted.
                     </p>
                   </div>
                 </div>}
@@ -398,9 +403,9 @@ const AdminSignup: React.FC = () => {
             <div className="w-full space-y-3">
               <Button
                 onClick={() => setLocation('/admin-login')}
-                className="w-full bg-gradient-to-r from-[#FF8882] to-[#FF9B95] hover:from-[#E87872] hover:to-[#E88A84] text-white rounded-2xl py-5 font-black text-sm shadow-xl shadow-rose-200/70 transition-all active:scale-[0.98]"
+                className="h-12 w-full rounded-xl bg-[#21634a] font-semibold text-white shadow-sm transition-colors hover:bg-[#194d39] active:scale-[0.99]"
               >
-                <Store className="w-4.5 h-4.5 mr-2" />
+                <Store className="mr-2 h-4 w-4" />
                 {identityVerified ? 'Sign In to This Store' : 'Sign In'}
               </Button>
 
@@ -408,7 +413,7 @@ const AdminSignup: React.FC = () => {
                 <Button
                   variant="outline"
                   onClick={checkDeviceStatus}
-                  className="w-full rounded-2xl py-5 font-bold text-sm"
+                  className="h-12 w-full rounded-xl border-[#cbd9ce] font-semibold text-[#285b45] hover:bg-[#f3f7f3]"
                 >
                   Refresh Binding Status
                 </Button>
@@ -421,15 +426,15 @@ const AdminSignup: React.FC = () => {
                     setShowUnbindConfirm(true);
                   }}
                   variant="destructive"
-                  className="w-full rounded-2xl py-5 font-black text-sm shadow-lg shadow-red-100 transition-all active:scale-[0.98] bg-white text-red-600 border-2 border-red-200 hover:bg-red-50 hover:text-red-700 hover:border-red-300"
+                  className="h-12 w-full rounded-xl border border-[#e4d8bd] bg-white font-semibold text-[#80591c] transition-colors hover:bg-[#fbf7ed] hover:text-[#684713]"
                 >
-                  <Unlock className="w-4.5 h-4.5 mr-2" />
+                  <Unlock className="mr-2 h-4 w-4" />
                   Verify Owner & Reset Device
                 </Button>
               )}
             </div>
           </motion.div>
-        </div>
+        </main>
 
         <AlertDialog
           open={showUnbindConfirm}
@@ -438,22 +443,22 @@ const AdminSignup: React.FC = () => {
             if (!open) setOwnerCredentials({ username: '', password: '' });
           }}
         >
-          <AlertDialogContent className="rounded-[2rem] max-w-md border-0 shadow-2xl">
+          <AlertDialogContent className="max-w-md rounded-2xl border border-[#dce5dc] shadow-[0_24px_70px_rgba(29,54,42,0.18)]">
             <AlertDialogHeader className="text-center pb-2">
-              <div className="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                <AlertTriangle className="w-8 h-8 text-red-500" />
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[#fbf3e3] text-[#94651b]">
+                <AlertTriangle className="h-5 w-5" />
               </div>
-              <AlertDialogTitle className="text-xl font-black tracking-tight text-gray-900">
+              <AlertDialogTitle className="text-xl font-semibold tracking-tight text-[#263b30]">
                 Verify Owner and Reset Device
               </AlertDialogTitle>
-              <AlertDialogDescription className="text-sm font-medium text-gray-500 leading-relaxed pt-1">
+              <AlertDialogDescription className="pt-1 text-sm font-normal leading-6 text-[#66756b]">
                   Enter the current store owner’s sign-in credentials. They are checked against the bound tenant, or against the exact local account when no binding exists. No cloud account or cloud inventory is deleted.
                 </AlertDialogDescription>
               </AlertDialogHeader>
 
               <div className="px-1 py-3 space-y-4 text-left">
                 <div className="space-y-1.5">
-                  <label htmlFor="reset-owner-username" className="text-sm font-semibold text-gray-700">Owner username or sign-in ID</label>
+                  <label htmlFor="reset-owner-username" className="text-sm font-medium text-[#33463a]">Owner username or sign-in ID</label>
                   <Input
                     id="reset-owner-username"
                     autoComplete="username"
@@ -465,7 +470,7 @@ const AdminSignup: React.FC = () => {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label htmlFor="reset-owner-password" className="text-sm font-semibold text-gray-700">Current password</label>
+                  <label htmlFor="reset-owner-password" className="text-sm font-medium text-[#33463a]">Current password</label>
                   <Input
                     id="reset-owner-password"
                     type="password"
@@ -477,19 +482,19 @@ const AdminSignup: React.FC = () => {
                     required
                   />
                 </div>
-                <p className="text-xs text-gray-500 leading-relaxed">
+                <p className="text-xs leading-5 text-[#66756b]">
                   Only this device’s local account/session state and matching browser cache are cleared. Local data may remain in backups; this is not a secure data-erasure guarantee.
                 </p>
               </div>
 
               <AlertDialogFooter className="flex-col sm:flex-col gap-2 pt-2">
-                <AlertDialogCancel className="w-full rounded-xl h-12 font-bold text-sm border-gray-200">
+                <AlertDialogCancel className="h-11 w-full rounded-xl border-[#dce5dc] font-medium text-[#526258]">
                   Cancel
                 </AlertDialogCancel>
                 <AlertDialogAction
                   onClick={(e) => { e.preventDefault(); handleConfirmUnbind(); }}
                   disabled={unbindLoading || !ownerCredentials.username.trim() || !ownerCredentials.password}
-                  className="w-full rounded-xl h-12 font-black text-sm bg-red-600 hover:bg-red-700 shadow-lg shadow-red-200"
+                  className="h-11 w-full rounded-xl bg-[#21634a] font-semibold text-white shadow-sm hover:bg-[#194d39]"
                 >
                   {unbindLoading ? (
                     <>
@@ -511,137 +516,301 @@ const AdminSignup: React.FC = () => {
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="min-h-screen bg-white"
-    >
-      <div className="p-6">
-        <motion.div
-          initial={{ y: -20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          className="text-center mb-6 pt-6"
-        >
-          <Store className="w-16 h-16 text-primary-500 mb-4 mx-auto" />
-          <h2 className="text-2xl font-bold text-gray-800">Setup Your Business</h2>
-          <p className="text-gray-600 mt-2">Create a new SmartPOS+ account</p>
-        </motion.div>
-        
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <FormField
-              control={form.control}
-              name="businessName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="text-gray-700 font-medium">Business Name</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="e.g., Kanegosyo Store"
-                      data-testid="input-business-name"
-                      className="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            
-            <FormField
-              control={form.control}
-              name="ownerName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="text-gray-700 font-medium">Owner's Name</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="Your full name"
-                      data-testid="input-owner-name"
-                      className="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            
-            <FormField
-              control={form.control}
-              name="mobile"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="text-gray-700 font-medium">Mobile Number</FormLabel>
-                  <FormControl>
-                    <Input
-                      type="tel"
-                      placeholder="+63 9XX XXX XXXX"
-                      data-testid="input-mobile"
-                      className="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            
-            <FormField
-              control={form.control}
-              name="password"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="text-gray-700 font-medium">Password</FormLabel>
-                  <FormControl>
-                    <Input
-                      type="password"
-                      placeholder="Create a strong password"
-                      data-testid="input-password"
-                      className="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            
-            <Button
-              type="submit"
-              disabled={isLoading}
-              data-testid="button-create-account"
-              className="w-full bg-[#FF8882] text-white p-4 rounded-xl font-semibold shadow-lg hover:bg-[#D89D9D] mt-6 touch-feedback"
-              style={{
-                boxShadow: '0 4px 12px rgba(255, 136, 130, 0.3)',
-              }}
+    <main className="min-h-screen bg-[#f5f7f3] text-[#263b30]">
+      <div className="mx-auto max-w-7xl px-5 pb-8 pt-5 sm:px-8 sm:pt-7">
+        <header className="flex items-center justify-between gap-4">
+          <div className="inline-flex items-center gap-2 rounded-lg text-sm font-semibold tracking-tight text-[#263b30]">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#21634a] text-white">
+              <Store className="h-4 w-4" aria-hidden="true" />
+            </span>
+            SmartPOS
+          </div>
+          <p className="text-right text-xs text-[#66756b] sm:text-sm">
+            Already have an account?
+            <button
+              type="button"
+              onClick={() => setLocation('/admin-login')}
+              data-testid="button-go-login"
+              className="ml-1.5 font-semibold text-[#21634a] underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#21634a] focus-visible:ring-offset-2"
             >
-              {isLoading ? 'Creating Account...' : 'Create Account'}
-            </Button>
-          </form>
-        </Form>
-        
-        <div className="text-center mt-4">
-          <span className="text-gray-500">Already have an account?</span>
-          <button
-            onClick={() => setLocation('/admin-login')}
-            data-testid="button-go-login"
-            className="text-primary-500 font-semibold ml-1"
-          >
-            Login
-          </button>
+              Sign in
+            </button>
+          </p>
+        </header>
+
+        <div className="mx-auto mt-8 grid max-w-6xl grid-cols-1 gap-8 lg:mt-12 lg:grid-cols-[0.9fr_1.1fr] lg:items-center lg:gap-16">
+          <section className="order-2 rounded-2xl bg-[#173f31] px-6 py-7 text-white shadow-[0_22px_60px_rgba(23,63,49,0.12)] sm:px-8 sm:py-9 lg:order-1 lg:min-h-[590px] lg:flex lg:flex-col lg:justify-between lg:p-10">
+            <div>
+              <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#c9ddd0]">
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                Built for your business
+              </p>
+              <h2 className="max-w-md text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
+                A better way to run your store starts here.
+              </h2>
+              <p className="mt-4 max-w-sm text-sm leading-6 text-[#d2e0d6]">
+                Set up your SmartPOS account and bring your day-to-day sales into one clear, reliable workspace.
+              </p>
+            </div>
+            <div
+              aria-hidden="true"
+              className="mt-8 w-full max-w-[19rem] rotate-[-1deg] rounded-2xl border border-[#eadfc7] bg-[#fbf7ed] p-4 text-[#263b30] shadow-[0_16px_32px_rgba(8,28,19,0.22)] sm:mt-10"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-[#748278]">Sample close</p>
+                  <p className="mt-1 text-xs font-semibold text-[#263b30]">Today at the counter</p>
+                </div>
+                <span className="rounded-md bg-[#eaf2eb] px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em] text-[#285b45]">SmartPOS</span>
+              </div>
+              <div className="my-3 border-t border-dashed border-[#d8ccb2]" />
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-medium text-[#748278]">Sales recorded</p>
+                  <p className="mt-0.5 text-xl font-semibold tracking-tight text-[#173f31]">₱18,420</p>
+                </div>
+                <p className="pb-1 text-right text-[10px] font-medium leading-4 text-[#66756b]">42 transactions<br />ready to review</p>
+              </div>
+              <div className="mt-3 flex items-center gap-2 border-t border-dashed border-[#d8ccb2] pt-3 text-[10px] font-medium text-[#526258]">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#397957]" />
+                Your day's sales, in one place
+              </div>
+            </div>
+            <div className="mt-8 border-t border-white/15 pt-5 lg:mt-12">
+              <div className="flex items-start gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-[#d8e8dc]">
+                  <Lock className="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-white">Your account, your control</p>
+                  <p className="mt-1 text-xs leading-5 text-[#c2d7c8]">Your owner credentials help protect access to your store.</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="order-1 rounded-2xl border border-[#dce5dc] bg-white px-5 py-7 shadow-[0_18px_55px_rgba(29,54,42,0.06)] sm:px-8 sm:py-9 lg:order-2 lg:px-10">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#397957]">Create your store</p>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[#263b30] sm:text-3xl">Set up your account</h1>
+              <p className="mt-2 text-sm leading-6 text-[#66756b]">A few details are all you need to get started.</p>
+            </div>
+
+            <div className="mt-7">
+              <div role="group" aria-label="Account setup progress" className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#21634a] text-[11px] font-semibold text-white">1</span>
+                  <span className="text-xs font-semibold text-[#33463a]">Store details</span>
+                </div>
+                <span className="h-px flex-1 bg-[#dce5dc]" aria-hidden="true" />
+                <div className="flex items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full border border-[#cbd9ce] bg-white text-[11px] font-semibold text-[#66756b]">2</span>
+                  <span className="text-xs font-medium text-[#66756b]">Owner account</span>
+                </div>
+              </div>
+            </div>
+
+            {statusLoading ? (
+              <div role="status" aria-live="polite" className="mt-6 flex items-center gap-2.5 rounded-xl border border-[#dce5dc] bg-[#f7faf6] px-3.5 py-3 text-xs font-medium text-[#526258]">
+                <Loader2 className="h-4 w-4 animate-spin text-[#21634a]" aria-hidden="true" />
+                Checking device availability…
+              </div>
+            ) : (deviceStatus?.localAccountPresent || deviceStatus?.legacyBindingPresent) && deviceStatus.bound !== true ? (
+              <div role="status" className="mt-6 flex items-start gap-2.5 rounded-xl border border-[#e4d8bd] bg-[#fbf7ed] px-3.5 py-3 text-xs leading-5 text-[#725727]">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#94651b]" aria-hidden="true" />
+                <div className="flex-1">
+                  <p>
+                    {deviceStatus.legacyBindingPresent
+                      ? 'A legacy server account exists without a device ID. It does not block this browser from creating a store.'
+                      : 'Local account data is saved in this browser. It is separate from a server-confirmed device binding.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowUnbindConfirm(true)}
+                    className="mt-2 font-semibold text-[#725727] underline underline-offset-2 hover:text-[#553f18] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94651b] focus-visible:ring-offset-2"
+                  >
+                    {deviceStatus.legacyBindingPresent ? 'Verify owner and reset legacy setup' : 'Verify owner and clear local account data'}
+                  </button>
+                </div>
+              </div>
+            ) : deviceStatus?.bound === true ? (
+              <div role="status" className="mt-6 flex items-center gap-2.5 rounded-xl border border-[#c6d9cc] bg-[#eaf2eb] px-3.5 py-3 text-xs font-medium text-[#285b45]">
+                <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                Device status verified.
+              </div>
+            ) : null}
+
+            <div className="mt-6 flex items-start gap-2.5 rounded-xl border border-[#dce5dc] bg-[#f7faf6] px-3.5 py-3 text-xs leading-5 text-[#526258] lg:hidden">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-[#21634a]" aria-hidden="true" />
+              <p>Your owner credentials help protect access to your store.</p>
+            </div>
+
+            <Form {...form}>
+              <form onSubmit={form.handleSubmit(onSubmit)} className="mt-7 space-y-5">
+                <FormField
+                  control={form.control}
+                  name="businessName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-sm font-medium text-[#33463a]">Business Name</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder="e.g., Kanegosyo Store"
+                          data-testid="input-business-name"
+                          className="h-11 rounded-xl border-[#d6dfd6] bg-white px-3.5 text-sm text-[#263b30] placeholder:text-[#89958b] focus-visible:ring-2 focus-visible:ring-[#21634a] focus-visible:ring-offset-1"
+                          autoComplete="organization"
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <div className="border-t border-[#edf1ed] pt-5">
+                  <p className="mb-4 text-xs font-semibold uppercase tracking-[0.12em] text-[#748278]">Owner account</p>
+                  <div className="space-y-5">
+                    <FormField
+                      control={form.control}
+                      name="ownerName"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="text-sm font-medium text-[#33463a]">Owner&apos;s Name</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="Your full name"
+                              data-testid="input-owner-name"
+                              className="h-11 rounded-xl border-[#d6dfd6] bg-white px-3.5 text-sm text-[#263b30] placeholder:text-[#89958b] focus-visible:ring-2 focus-visible:ring-[#21634a] focus-visible:ring-offset-1"
+                              autoComplete="name"
+                              {...field}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="mobile"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="text-sm font-medium text-[#33463a]">Mobile Number</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="tel"
+                              placeholder="+63 9XX XXX XXXX"
+                              data-testid="input-mobile"
+                              className="h-11 rounded-xl border-[#d6dfd6] bg-white px-3.5 text-sm text-[#263b30] placeholder:text-[#89958b] focus-visible:ring-2 focus-visible:ring-[#21634a] focus-visible:ring-offset-1"
+                              autoComplete="tel"
+                              {...field}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="password"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="text-sm font-medium text-[#33463a]">Password</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="password"
+                              placeholder="Create a strong password"
+                              data-testid="input-password"
+                              className="h-11 rounded-xl border-[#d6dfd6] bg-white px-3.5 text-sm text-[#263b30] placeholder:text-[#89958b] focus-visible:ring-2 focus-visible:ring-[#21634a] focus-visible:ring-offset-1"
+                              autoComplete="new-password"
+                              {...field}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                </div>
+
+                <Button
+                  type="submit"
+                  disabled={isLoading || statusLoading || form.formState.isSubmitting || form.formState.isValidating || isLocked || !!statusError || unbindLoading || !!resetCleanupScope}
+                  data-testid="button-create-account"
+                  className="mt-1 h-12 w-full rounded-xl bg-[#21634a] text-sm font-semibold text-white shadow-[0_8px_18px_rgba(33,99,74,0.16)] transition-colors hover:bg-[#194d39] focus-visible:ring-2 focus-visible:ring-[#21634a] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-[#a7b9ad] disabled:text-white"
+                >
+                  {isLoading ? (
+                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Creating account…</>
+                  ) : 'Create account'}
+                </Button>
+              </form>
+            </Form>
+            {(deviceStatus?.localAccountPresent || deviceStatus?.legacyBindingPresent) && deviceStatus.bound !== true && (
+              <AlertDialog
+                open={showUnbindConfirm}
+                onOpenChange={(open) => {
+                  setShowUnbindConfirm(open);
+                  if (!open) setOwnerCredentials({ username: '', password: '' });
+                }}
+              >
+                <AlertDialogContent className="rounded-2xl border-[#dce5dc] sm:max-w-md">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle className="text-lg font-semibold text-[#263b30]">
+                      {deviceStatus.legacyBindingPresent ? 'Verify legacy store owner' : 'Clear this browser’s saved account'}
+                    </AlertDialogTitle>
+                    <AlertDialogDescription className="text-sm leading-6 text-[#66756b]">
+                      {deviceStatus.legacyBindingPresent
+                        ? 'The legacy server marker has no browser identity. Owner verification is required before it can be cleared; this does not affect new device registration.'
+                        : 'This only clears matching local browser data. It does not delete a cloud account or store data.'}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <div className="space-y-4">
+                    <div className="space-y-1.5">
+                      <label htmlFor="local-reset-owner-username" className="text-sm font-medium text-[#33463a]">Owner username or sign-in ID</label>
+                      <Input
+                        id="local-reset-owner-username"
+                        autoComplete="username"
+                        value={ownerCredentials.username}
+                        onChange={(event) => setOwnerCredentials(current => ({ ...current, username: event.target.value }))}
+                        disabled={unbindLoading}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="local-reset-owner-password" className="text-sm font-medium text-[#33463a]">Current password</label>
+                      <Input
+                        id="local-reset-owner-password"
+                        type="password"
+                        autoComplete="current-password"
+                        value={ownerCredentials.password}
+                        onChange={(event) => setOwnerCredentials(current => ({ ...current, password: event.target.value }))}
+                        disabled={unbindLoading}
+                      />
+                    </div>
+                  </div>
+                  <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
+                    <AlertDialogCancel className="h-11 w-full rounded-xl border-[#dce5dc]" disabled={unbindLoading}>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={(event) => { event.preventDefault(); handleConfirmUnbind(); }}
+                      disabled={unbindLoading || !ownerCredentials.username.trim() || !ownerCredentials.password}
+                      className="h-11 w-full rounded-xl bg-[#21634a] font-semibold text-white hover:bg-[#194d39]"
+                    >
+                      {unbindLoading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Verifying owner…</> : <><Unlock className="mr-2 h-4 w-4" />Verify and reset</>}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+            <button
+              type="button"
+              onClick={() => setLocation('/role-selection')}
+              data-testid="button-back"
+              className="mt-5 inline-flex items-center rounded-lg text-xs font-medium text-[#748278] transition-colors hover:text-[#21634a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#21634a] focus-visible:ring-offset-2"
+            >
+              <ArrowLeft className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Back to role selection
+            </button>
+          </section>
         </div>
-        
-        <button
-          onClick={() => setLocation('/role-selection')}
-          data-testid="button-back"
-          className="mt-4 text-gray-400 flex items-center touch-feedback"
-        >
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back
-        </button>
       </div>
-    </motion.div>
+    </main>
   );
 };
 

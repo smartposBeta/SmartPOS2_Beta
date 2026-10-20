@@ -3,6 +3,36 @@ const getBaseUrl = () => {
   return window.location.origin;
 };
 
+const DEVICE_ID_STORAGE_KEY = 'smartpos_device_id';
+let cachedDeviceId: string | null = null;
+
+const createDeviceId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
+    const random = Math.floor(Math.random() * 16);
+    const value = character === 'x' ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+};
+
+export const getDeviceId = (): string => {
+  if (cachedDeviceId) return cachedDeviceId;
+
+  const storedDeviceId = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+  if (storedDeviceId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(storedDeviceId)) {
+    cachedDeviceId = storedDeviceId;
+    return cachedDeviceId;
+  }
+
+  const deviceId = createDeviceId();
+  localStorage.setItem(DEVICE_ID_STORAGE_KEY, deviceId);
+  cachedDeviceId = deviceId;
+  return cachedDeviceId;
+};
+
 const extractTenantFromPath = () => {
   const pathname = window.location.pathname;
   const pathParts = pathname.split('/');
@@ -36,6 +66,7 @@ const getHeaders = () => {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-Tenant-ID': subdomain,
+    'X-Device-ID': getDeviceId(),
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
@@ -51,6 +82,7 @@ const api = {
     try {
       const response = await fetch(`${getBaseUrl()}${endpoint}`, {
         headers: getHeaders(),
+        ...(endpoint === '/api/tenants/device-status' ? { cache: 'no-store' as RequestCache } : {}),
       });
       if (!response.ok) {
         const errorText = await response.text();
