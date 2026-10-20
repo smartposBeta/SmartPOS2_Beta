@@ -508,9 +508,12 @@ const AdminMain: React.FC = () => {
 
   const handleMarkAsRead = async (id: string) => {
     try {
+      const wasUnread = notifications.some(notification =>
+        notification.id === id && !notification.isRead
+      );
       await NotificationService.markAsRead(id);
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: true } : n));
-      setUnreadCount(prev => Math.max(0, prev - 1));
+      if (wasUnread) setUnreadCount(prev => Math.max(0, prev - 1));
     } catch (error) {
       console.error('Failed to mark as read', error);
     }
@@ -733,13 +736,18 @@ const AdminMain: React.FC = () => {
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+                  aria-haspopup="dialog"
                   className="w-10 h-10 rounded-xl bg-white border border-gray-100 shadow-sm relative group"
                   onClick={() => setShowNotifications(true)}
                 >
-                  <Bell className="w-4 h-4 text-gray-400 group-hover:text-[#BF953F] transition-colors" />
+                  <Bell className={cn("w-4 h-4 transition-colors", unreadCount > 0 ? "text-red-600" : "text-gray-400 group-hover:text-[#BF953F]")} />
                   {unreadCount > 0 && (
-                    <span className="absolute top-1 right-1 w-3.5 h-3.5 bg-red-500 text-white text-[8px] font-black rounded-full flex items-center justify-center border-2 border-white">
-                      {unreadCount}
+                    <span
+                      aria-hidden="true"
+                      className="absolute -top-1 -right-1 min-w-5 h-5 px-1 bg-red-600 text-white text-[9px] font-black rounded-full flex items-center justify-center border-2 border-white shadow-sm motion-safe:animate-pulse"
+                    >
+                      {unreadCount > 99 ? '99+' : unreadCount}
                     </span>
                   )}
                 </Button>

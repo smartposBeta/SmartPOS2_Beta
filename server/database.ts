@@ -2629,6 +2629,14 @@ export const dbService = {
     return session;
   },
 
+  getDeviceSessionByToken: (token: string, deviceId: string, tenantId: string) => {
+    return db.prepare(`
+      SELECT user_id, tenant_id, device_id
+      FROM sessions
+      WHERE token = ? AND device_id = ? AND tenant_id = ?
+    `).get(token, deviceId, tenantId) as { user_id: string; tenant_id: string; device_id: string } | undefined;
+  },
+
   getUserSessions: (userId: string) => {
     return db.prepare('SELECT * FROM sessions WHERE user_id = ? ORDER BY last_active_at DESC').all(userId);
   },

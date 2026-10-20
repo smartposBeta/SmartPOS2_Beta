@@ -229,68 +229,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: 'A valid browser device ID is required to reset account setup.' });
       }
 
-      const username = String(req.body?.adminUsername || '').trim();
-      const password = String(req.body?.adminPassword || '');
-      if (!username || !password) {
-        return res.status(401).json({ error: 'The current store owner username and password are required.' });
-      }
-
       const binding = dbService.getDeviceBinding(deviceId);
       const legacyTenantId = binding ? null : dbService.getLegacyBoundTenantId();
       const boundTenantId = binding?.tenant_id || legacyTenantId;
       if (!boundTenantId) {
         return res.status(409).json({ error: 'This browser has no server-side account binding to reset.' });
       }
-      let verifiedOwner: any = null;
-      if (boundTenantId && useCloud()) {
-        const supabase = getSupabase();
-        if (!supabase) {
-          return res.status(503).json({ error: 'Cloud credential verification is unavailable. No device state was changed.' });
-        }
-        const { data: cloudAdmins, error: cloudError } = await supabase
-          .from('users')
-          .select('id, tenant_id, username, password, role')
-          .eq('tenant_id', boundTenantId)
-          .in('role', ['admin', 'owner', 'superuser']);
-        if (cloudError) {
-          return res.status(503).json({ error: 'The bound account could not be verified with the cloud service. No device state was changed.' });
-        }
-        const matches = (cloudAdmins || []).filter((admin: any) =>
-          String(admin.tenant_id) === boundTenantId
-          && adminRoles.has(String(admin.role || '').toLowerCase())
-          && adminIdentifierMatches(admin, username)
-        );
-        if (matches.length !== 1 || !await verifyAccountPassword(password, matches[0]?.password)) {
-          return res.status(401).json({ error: 'Owner credentials did not match an admin account in the bound store.' });
-        }
-        verifiedOwner = matches[0];
-      } else {
-        const localAdmins = boundTenantId
-          ? dbService.getLocalAdminByCredential(boundTenantId, username)
-          : dbService.getLocalAdminAccounts().filter((admin: any) => adminIdentifierMatches(admin, username));
-        const matches = (localAdmins || []).filter((admin: any) =>
-          (!boundTenantId || String(admin.tenant_id) === boundTenantId)
-          && adminRoles.has(String(admin.role || '').toLowerCase())
-          && adminIdentifierMatches(admin, username)
-        );
-        if (matches.length !== 1 || !await verifyAccountPassword(password, matches[0]?.password)) {
-          return res.status(401).json({ error: 'Owner credentials did not match the local account for this device.' });
-        }
-        verifiedOwner = matches[0];
-      }
 
-      const tenantId = String(verifiedOwner?.tenant_id || '');
-      const accountId = String(verifiedOwner?.id || '');
-      if (!tenantId || !accountId || (boundTenantId && tenantId !== boundTenantId)) {
-        return res.status(403).json({ error: 'The verified account is not the account currently associated with this device.' });
+      const authHeader = String(req.headers.authorization || '');
+      const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+      const deviceSession = tokenMatch
+        ? dbService.getDeviceSessionByToken(tokenMatch[1].trim(), deviceId, boundTenantId)
+        : undefined;
+      let accountId = binding?.account_id || '';
+
+      if (!deviceSession) {
+        const username = String(req.body?.adminUsername || '').trim();
+        const password = String(req.body?.adminPassword || '');
+        if (!username || !password) {
+          return res.status(401).json({ error: 'Sign in to the account currently using this device or enter the current store owner credentials.' });
+        }
+
+        let verifiedOwner: any = null;
+        if (useCloud()) {
+          const supabase = getSupabase();
+          if (!supabase) {
+            return res.status(503).json({ error: 'Cloud credential verification is unavailable. No device state was changed.' });
+          }
+          const { data: cloudAdmins, error: cloudError } = await supabase
+            .from('users')
+            .select('id, tenant_id, username, password, role')
+            .eq('tenant_id', boundTenantId)
+            .in('role', ['admin', 'owner', 'superuser']);
+          if (cloudError) {
+            return res.status(503).json({ error: 'The bound account could not be verified with the cloud service. No device state was changed.' });
+          }
+          const matches = (cloudAdmins || []).filter((admin: any) =>
+            String(admin.tenant_id) === boundTenantId
+            && adminRoles.has(String(admin.role || '').toLowerCase())
+            && adminIdentifierMatches(admin, username)
+          );
+          if (matches.length !== 1 || !await verifyAccountPassword(password, matches[0]?.password)) {
+            return res.status(401).json({ error: 'Owner credentials did not match an admin account in the bound store.' });
+          }
+          verifiedOwner = matches[0];
+        } else {
+          const localAdmins = boundTenantId
+            ? dbService.getLocalAdminByCredential(boundTenantId, username)
+            : dbService.getLocalAdminAccounts().filter((admin: any) => adminIdentifierMatches(admin, username));
+          const matches = (localAdmins || []).filter((admin: any) =>
+            (!boundTenantId || String(admin.tenant_id) === boundTenantId)
+            && adminRoles.has(String(admin.role || '').toLowerCase())
+            && adminIdentifierMatches(admin, username)
+          );
+          if (matches.length !== 1 || !await verifyAccountPassword(password, matches[0]?.password)) {
+            return res.status(401).json({ error: 'Owner credentials did not match the local account for this device.' });
+          }
+          verifiedOwner = matches[0];
+        }
+
+        const verifiedTenantId = String(verifiedOwner?.tenant_id || '');
+        accountId = String(verifiedOwner?.id || '');
+        if (!verifiedTenantId || !accountId || verifiedTenantId !== boundTenantId) {
+          return res.status(403).json({ error: 'The verified account is not the account currently associated with this device.' });
+        }
       }
 
       const resetScope = binding
         ? dbService.clearDeviceBinding(deviceId, boundTenantId, accountId)
         : dbService.clearLegacyDeviceBinding(
           boundTenantId,
-          accountId,
-          String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+          String(deviceSession?.user_id || accountId),
+          deviceSession ? tokenMatch?.[1]?.trim() : undefined
         );
       return res.json({
         success: true,

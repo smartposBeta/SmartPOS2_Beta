@@ -185,10 +185,14 @@ export const NotificationService = {
   async getUnreadCount(): Promise<number> {
     try {
       const res = await api.get<{ count: number }>('/api/notifications/unread-count');
-      return res.count;
+      if (Number.isInteger(res?.count) && res.count >= 0) return res.count;
     } catch {
-      return await db.notifications.where('isRead').equals(0).count();
+      // The current notification API may be unavailable; count local records below.
     }
+    return db.notifications.toCollection().filter(notification => {
+      const readState = notification.isRead as boolean | number | null | undefined;
+      return readState === false || readState === 0 || readState == null;
+    }).count();
   },
   async markAsRead(id: string): Promise<void> {
     try {
@@ -200,7 +204,9 @@ export const NotificationService = {
     try {
       await api.patch('/api/notifications/mark-all-read', {});
     } catch {}
-    await db.notifications.where('isRead').equals(0).modify({ isRead: true });
+    await db.notifications.toCollection().modify(notification => {
+      if (!notification.isRead) notification.isRead = true;
+    });
   },
   async delete(id: string): Promise<void> {
     try {

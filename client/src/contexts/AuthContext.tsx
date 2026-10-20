@@ -15,7 +15,7 @@ interface AuthContextType {
   login: (user: User, token?: string, opts?: { staleData?: boolean }) => Promise<void>;
   loginStaff: (staffId: string, passkey: string) => Promise<void>;
   logout: () => void;
-  unbindDevice: (creds: { adminUsername: string; adminPassword: string }) => Promise<{
+  unbindDevice: (creds?: { adminUsername: string; adminPassword: string }) => Promise<{
     success: boolean;
     error?: string;
     resetCommitted?: boolean;
@@ -338,7 +338,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     localStorage.removeItem('smartpos_guest_expiry');
   };
 
-  const unbindDevice = useCallback(async (creds: { adminUsername: string; adminPassword: string }): Promise<{
+  const unbindDevice = useCallback(async (creds?: { adminUsername: string; adminPassword: string }): Promise<{
     success: boolean;
     error?: string;
     resetCommitted?: boolean;
@@ -349,13 +349,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     let tenantId: string | undefined;
     let accountId: string | undefined;
     try {
-      if (!creds?.adminUsername?.trim() || !creds?.adminPassword) {
-        return { success: false, error: 'Enter the current store owner username and password to reset this device.' };
-      }
-      const resp = await api.post('/api/tenants/unbind-device', {
-        adminUsername: creds.adminUsername.trim(),
-        adminPassword: creds.adminPassword
-      });
+      const body = creds?.adminUsername?.trim() && creds.adminPassword
+        ? { adminUsername: creds.adminUsername.trim(), adminPassword: creds.adminPassword }
+        : {};
+      const resp = await api.post('/api/tenants/unbind-device', body);
       if (resp?.success !== true) {
         return { success: false, error: 'The server did not confirm the device reset.' };
       }

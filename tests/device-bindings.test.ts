@@ -131,6 +131,18 @@ test('reset removes only the requested device binding and sessions', () => {
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM users').get().count, 2);
 });
 
+test('session-based reset authorization is limited to the matching device and tenant', () => {
+  registerDevice('device-0001', 'tenant-0001', 'account-0001');
+  registerDevice('device-0002', 'tenant-0002', 'account-0002');
+
+  assert.equal(
+    dbService.getDeviceSessionByToken('token-device-0001', 'device-0001', 'tenant-0001')?.user_id,
+    'account-0001',
+  );
+  assert.equal(dbService.getDeviceSessionByToken('token-device-0001', 'device-0002', 'tenant-0001'), undefined);
+  assert.equal(dbService.getDeviceSessionByToken('token-device-0001', 'device-0001', 'tenant-0002'), undefined);
+});
+
 test('legacy reset removes only the requesting session and preserves shared tenant data', () => {
   registerDevice('device-0001', 'tenant-0001', 'account-0001');
   registerDevice('device-0002', 'tenant-0002', 'account-0002');

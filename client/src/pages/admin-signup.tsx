@@ -61,7 +61,10 @@ const AdminSignup: React.FC = () => {
   const [resetCleanupScope, setResetCleanupScope] = useState<{ tenantId: string; accountId: string } | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const { login, unbindDevice } = useAuth();
+  const { login, unbindDevice, isAuthenticated, token } = useAuth();
+  const canResetBoundDeviceWithSession = isAuthenticated
+    && Boolean(token)
+    && Boolean(deviceStatus?.bound || deviceStatus?.legacyBindingPresent);
   const { toast } = useToast();
 
   const checkDeviceStatus = useCallback(async () => {
@@ -146,7 +149,7 @@ const AdminSignup: React.FC = () => {
         return;
       }
 
-      const r = await unbindDevice({
+      const r = await unbindDevice(canResetBoundDeviceWithSession ? undefined : {
         adminUsername: ownerCredentials.username,
         adminPassword: ownerCredentials.password
       });
@@ -422,14 +425,14 @@ const AdminSignup: React.FC = () => {
               {(hasConfirmedBinding || deviceStatus?.localAccountPresent) && (
                 <Button
                   onClick={() => {
-                    setOwnerCredentials({ username: adminUsername || '', password: '' });
+                    setOwnerCredentials({ username: canResetBoundDeviceWithSession ? '' : adminUsername || '', password: '' });
                     setShowUnbindConfirm(true);
                   }}
                   variant="destructive"
                   className="h-12 w-full rounded-xl border border-[#e4d8bd] bg-white font-semibold text-[#80591c] transition-colors hover:bg-[#fbf7ed] hover:text-[#684713]"
                 >
                   <Unlock className="mr-2 h-4 w-4" />
-                  Verify Owner & Reset Device
+                  {canResetBoundDeviceWithSession ? 'Use Signed-In Account to Reset Device' : 'Verify Owner & Reset Device'}
                 </Button>
               )}
             </div>
@@ -449,14 +452,16 @@ const AdminSignup: React.FC = () => {
                 <AlertTriangle className="h-5 w-5" />
               </div>
               <AlertDialogTitle className="text-xl font-semibold tracking-tight text-[#263b30]">
-                Verify Owner and Reset Device
+                {canResetBoundDeviceWithSession ? 'Reset This Device?' : 'Verify Owner and Reset Device'}
               </AlertDialogTitle>
               <AlertDialogDescription className="pt-1 text-sm font-normal leading-6 text-[#66756b]">
-                  Enter the current store owner’s sign-in credentials. They are checked against the bound tenant, or against the exact local account when no binding exists. No cloud account or cloud inventory is deleted.
+                  {canResetBoundDeviceWithSession
+                    ? 'Your active session for this browser and store will authorize the reset. No cloud account or cloud inventory is deleted.'
+                    : 'Enter the current store owner’s sign-in credentials. They are checked against the bound tenant, or against the exact local account when no binding exists. No cloud account or cloud inventory is deleted.'}
                 </AlertDialogDescription>
               </AlertDialogHeader>
 
-              <div className="px-1 py-3 space-y-4 text-left">
+              {!canResetBoundDeviceWithSession && <div className="px-1 py-3 space-y-4 text-left">
                 <div className="space-y-1.5">
                   <label htmlFor="reset-owner-username" className="text-sm font-medium text-[#33463a]">Owner username or sign-in ID</label>
                   <Input
@@ -485,7 +490,7 @@ const AdminSignup: React.FC = () => {
                 <p className="text-xs leading-5 text-[#66756b]">
                   Only this device’s local account/session state and matching browser cache are cleared. Local data may remain in backups; this is not a secure data-erasure guarantee.
                 </p>
-              </div>
+              </div>}
 
               <AlertDialogFooter className="flex-col sm:flex-col gap-2 pt-2">
                 <AlertDialogCancel className="h-11 w-full rounded-xl border-[#dce5dc] font-medium text-[#526258]">
@@ -493,18 +498,18 @@ const AdminSignup: React.FC = () => {
                 </AlertDialogCancel>
                 <AlertDialogAction
                   onClick={(e) => { e.preventDefault(); handleConfirmUnbind(); }}
-                  disabled={unbindLoading || !ownerCredentials.username.trim() || !ownerCredentials.password}
+                  disabled={unbindLoading || (!canResetBoundDeviceWithSession && (!ownerCredentials.username.trim() || !ownerCredentials.password))}
                   className="h-11 w-full rounded-xl bg-[#21634a] font-semibold text-white shadow-sm hover:bg-[#194d39]"
                 >
                   {unbindLoading ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Verifying & resetting…
+                      {canResetBoundDeviceWithSession ? 'Resetting device…' : 'Verifying & resetting…'}
                     </>
                   ) : (
                     <>
                       <Unlock className="w-4 h-4 mr-2" />
-                      Confirm owner reset
+                      {canResetBoundDeviceWithSession ? 'Confirm device reset' : 'Confirm owner reset'}
                     </>
                   )}
               </AlertDialogAction>
